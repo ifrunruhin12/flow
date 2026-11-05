@@ -31,7 +31,7 @@ services:
     ports:
       - "127.0.0.1:4533:4533"
     volumes:
-      - ../dev/music-root/library:/music:ro
+      - /home/ruhin/Music:/music:ro
       - navidrome_data_dev:/data
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://localhost:4533/ping"]

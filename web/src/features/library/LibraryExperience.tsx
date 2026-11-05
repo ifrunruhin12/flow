@@ -18,44 +18,39 @@ import {
   updatePlaylist,
 } from '../../lib/api'
 import type { Album, Artist, Playlist, Song } from '../../lib/types'
-import { PlayerBar } from './PlayerBar'
 
 type Section = 'albums' | 'artists' | 'songs' | 'search' | 'playlists'
 
-export function LibraryExperience({ isAdmin }: { isAdmin: boolean }) {
+export function LibraryExperience({
+  isAdmin,
+  onPlay,
+}: {
+  isAdmin: boolean
+  onPlay: (songs: Song[], index: number) => void
+}) {
   const [section, setSection] = useState<Section>('albums')
-  const [queue, setQueue] = useState<Song[]>([])
-  const [queueIndex, setQueueIndex] = useState(0)
-  const play = (songs: Song[], index: number) => {
-    if (songs[index] === undefined) return
-    setQueue(songs)
-    setQueueIndex(index)
-  }
   const scan = useQuery({ queryKey: ['library', 'scan'], queryFn: getScanStatus, refetchInterval: 30_000 })
 
   return (
-    <>
-      <main className="pb-44">
-        <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
-          <nav className="flex flex-wrap gap-2" aria-label="Music library">
-            {(['albums', 'artists', 'songs', 'search', 'playlists'] as const).map((item) => (
-              <button key={item} className={section === item ? 'button-primary' : 'button-secondary'} onClick={() => setSection(item)}>
-                {item[0]?.toUpperCase()}{item.slice(1)}
-              </button>
-            ))}
-          </nav>
-          <p className="text-xs text-[var(--flow-muted)]">
-            {scan.data?.scanning === true ? `Scanning · ${scan.data.count} items` : scan.isError ? 'Scan status unavailable' : 'Library ready'}
-          </p>
-        </div>
-        {section === 'albums' && <AlbumsView onPlay={play} />}
-        {section === 'artists' && <ArtistsView onPlay={play} />}
-        {section === 'songs' && <SongsView onPlay={play} />}
-        {section === 'search' && <SearchView onPlay={play} />}
-        {section === 'playlists' && <PlaylistsView isAdmin={isAdmin} onPlay={play} />}
-      </main>
-      <PlayerBar queue={queue} index={queueIndex} onIndex={setQueueIndex} />
-    </>
+    <main className="pb-44">
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        <nav className="flex flex-wrap gap-2" aria-label="Music library">
+          {(['albums', 'artists', 'songs', 'search', 'playlists'] as const).map((item) => (
+            <button key={item} className={section === item ? 'button-primary' : 'button-secondary'} onClick={() => setSection(item)}>
+              {item[0]?.toUpperCase()}{item.slice(1)}
+            </button>
+          ))}
+        </nav>
+        <p className="text-xs text-[var(--flow-muted)]">
+          {scan.data?.scanning === true ? `Scanning · ${scan.data.count} items` : scan.isError ? 'Scan status unavailable' : 'Library ready'}
+        </p>
+      </div>
+      {section === 'albums' && <AlbumsView onPlay={onPlay} />}
+      {section === 'artists' && <ArtistsView onPlay={onPlay} />}
+      {section === 'songs' && <SongsView onPlay={onPlay} />}
+      {section === 'search' && <SearchView onPlay={onPlay} />}
+      {section === 'playlists' && <PlaylistsView isAdmin={isAdmin} onPlay={onPlay} />}
+    </main>
   )
 }
 

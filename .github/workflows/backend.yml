@@ -1,0 +1,39 @@
+name: backend
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: flow_test
+          POSTGRES_USER: flow
+          POSTGRES_PASSWORD: flow-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U flow -d flow_test"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      FLOW_TEST_DATABASE_URL: postgres://flow:flow-test-only@127.0.0.1:5432/flow_test?sslmode=disable
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .go-version
+          cache-dependency-path: backend/go.sum
+      - run: gofmt -w . && git diff --exit-code
+      - run: go vet ./...
+      - run: go test -race ./...
+      - run: go build ./cmd/flowd

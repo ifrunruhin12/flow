@@ -17,99 +17,93 @@ Flow is **not** a public streaming service. It is a single admin-curated music l
 
 ```text
 flow/
-├── README.md                  ← this file
-├── docs/                      ← all engineering documents
-│   ├── PRODUCT_SPEC.md
-│   ├── REQUIREMENTS.md
-│   ├── ARCHITECTURE.md
-│   ├── DATABASE_SCHEMA.md
-│   ├── API_SPECIFICATION.md
-│   ├── PLAYBACK_SYSTEM.md
-│   ├── NAVIDROME_INTEGRATION.md
-│   ├── SECURITY.md
-│   ├── DEPLOYMENT.md
-│   ├── DEVELOPMENT_GUIDE.md
-│   └── ROADMAP.md
-├── backend/                   ← Go modular monolith (auth, users, music proxy, sync engine, themes, admin)
-│   ├── cmd/
-│   ├── internal/
-│   │   ├── auth/              ← session management, JWT signing/verification, password hashing
-│   │   ├── users/             ← user CRUD, status lifecycle, admin actions
-│   │   ├── membership/        ← registration requests, approval/rejection, suspension
-│   │   ├── library/           ← read-only music metadata, search, favorites (proxy to Navidrome)
-│   │   ├── navidrome/         ← Navidrome HTTP client: Subsonic, native API, config
-│   │   ├── playlists/         ← admin playlist CRUD, member read access
-│   │   ├── playback/          ← individual session state, shared session state, WebSocket hub
-│   │   ├── sync/              ← synchronized playback coordinator: event broadcast, drift correction
-│   │   ├── themes/            ← theme definitions, user theme preferences
-│   │   ├── admin/             ← admin-only actions: mode switching, member management, settings
-│   │   ├── uploads/           ← file write to shared volume, scan trigger
-│   │   ├── api/               ← HTTP routes, middleware, request/response types
-│   │   ├── ws/                ← WebSocket hub, auth, event channels
-│   │   └── config/            ← config loading, secrets, database pool
-│   └── migrations/            ← Postgres migrations
-├── web/                       ← React + TypeScript + Vite + Tailwind
-│   ├── src/
-│   │   ├── components/
-│   │   ├── pages/
-│   │   ├── player/            ← persistent player component
-│   │   ├── sync/              ← synchronized mode UI
-│   │   ├── themes/            ← theme definitions (CSS custom properties)
-│   │   ├── hooks/
-│   │   └── lib/
-│   └── ...
-├── android/                   ← Kotlin + Compose + Media3 (post-V1)
-├── desktop/                   ← Tauri 2 wrapper (post-V1)
+├── backend/                   ← Go modular monolith
+│   ├── cmd/flowd/             ← process composition and graceful lifecycle
+│   ├── internal/api/          ← JSON API, auth/CSRF/role middleware, M2 routes
+│   ├── internal/auth/         ← password hashing and opaque sessions
+│   ├── internal/bootstrap/    ← encrypted admin-link bootstrap and rotation
+│   ├── internal/config/       ← environment loading and validation
+│   ├── internal/credentials/  ← external AES-GCM keyring
+│   ├── internal/database/     ← PostgreSQL pool and advisory-locked migrations
+│   ├── internal/httpserver/   ← health/readiness endpoints
+│   ├── internal/membership/   ← durable member provisioning and lifecycle
+│   ├── internal/library/      ← Flow-owned library models and pagination
+│   ├── internal/navidrome/    ← redacting Navidrome adapter and JWT cache
+│   ├── internal/playlist/     ← member reads and admin-curated playlist logic
+│   ├── internal/streaming/    ← secure audio/artwork gateway and lifecycle registry
+│   ├── integration/           ← opt-in real Navidrome contract suite
+│   └── migrations/            ← embedded milestone-owned SQL
+├── web/                       ← React/TypeScript M2 browser application and local player
 ├── deploy/
-│   ├── docker-compose.yml     ← production compose: navidrome, flow-backend, flow-web, caddy
-│   ├── caddy/
-│   │   └── Caddyfile
-│   └── migrations/            ← optional migration scripts
-└── .github/                   ← CI/CD workflows
+│   ├── docker-compose.dev.yml ← development PostgreSQL + Navidrome only
+│   └── .env.example           ← backend development configuration template
+├── dev/                       ← isolated fixture music root and helper script
+├── docs/                      ← product, architecture, contracts, and ADRs
+├── .github/workflows/         ← fast backend and pinned-Navidrome jobs
+└── CHANGELOG.md
 ```
 
-## Build & Run (V1.0.0, Web only)
+Production Compose/Caddy and later domain packages are introduced by their roadmap milestones. M2 contains the library and one browser-local player; it intentionally contains no M3 playback persistence/queue state, uploads, themes, or synchronized-playback placeholders.
 
-**Prerequisites:** Docker, a music directory containing FLAC/MP3/AAC files, a Navidrome install (or the bundled compose file in `deploy/`).
+## Current Status
 
-### 1. Navidrome
+Phase 1 architecture reconciliation, M0, and the M1 authentication/membership implementation are present. M2 library, artwork, playlists, and secure streaming are implemented with fast security/race tests green. The M2 completion gate remains pending one live run of the extended contract suite against the pinned Navidrome image; Docker was unavailable in the latest implementation environment.
 
-Point Navidrome at your music folder. Flow's Docker Compose includes a Navidrome service by default; configure the volume mount in `deploy/docker-compose.yml`:
+## Run M2 Locally
 
-```yaml
-navidrome:
-  volumes:
-    - /path/to/your/music:/music:ro
-    - navidrome_data:/data
-```
-
-Navidrome must be reachable from the Flow backend on the Docker internal network. No external ports needed.
-
-### 2. Flow Backend
+Prerequisites: Go 1.27.3, Node 20.18.2, Docker with Compose, and FFmpeg only if generating the deterministic audio fixture.
 
 ```bash
-docker compose -f deploy/docker-compose.yml up -d
+cp deploy/.env.example deploy/.env.local
+./dev/create-audio-fixture.sh
+./dev/create-credential-keyring.sh
+docker compose --env-file deploy/.env.local -f deploy/docker-compose.dev.yml up -d postgres navidrome
 ```
 
-The backend runs Postgres migrations on startup, bootstraps the admin account from environment variables (`FLOW_ADMIN_USERNAME`, `FLOW_ADMIN_PASSWORD`), and creates the corresponding Navidrome admin user via the native API.
-
-### 3. Flow Web
-
-Build the web app and serve it:
+Open `http://127.0.0.1:4533`, create the first Navidrome administrator through Navidrome's first-run UI, then set `FLOW_NAVIDROME_ADMIN_USERNAME`, `FLOW_NAVIDROME_ADMIN_PASSWORD`, `FLOW_ADMIN_USERNAME`, and a development-only `FLOW_ADMIN_PASSWORD` in `deploy/.env.local`. Keep `FLOW_CREDENTIAL_KEYRING_FILE=../deploy/secrets/flow-credential-keyring.json` because the backend is started from `backend/`. Never commit the env file or generated keyring.
 
 ```bash
-cd web && npm install && npm run build
+cd backend
+set -a
+source ../deploy/.env.local
+set +a
+go run ./cmd/flowd
 ```
 
-The built static files are mounted by Caddy in production. For development:
+In a third terminal, run the Vite client. Its same-origin development proxy forwards `/api` and `/audio` to the backend:
 
 ```bash
-cd web && npm run dev   # Vite dev server, proxies API to backend
+cd web
+npm install
+npm run dev
 ```
 
-### 4. First Login
+Open `http://127.0.0.1:5173`. The development PostgreSQL port defaults to `127.0.0.1:55432`; change `FLOW_DEV_POSTGRES_PORT` and the matching port in `FLOW_DATABASE_URL` together if needed. The backend applies migrations under a PostgreSQL advisory lock, verifies/bootstrap-links the configured administrators, and listens on `127.0.0.1:8080`.
 
-Navigate to your Caddy domain. Log in with the admin credentials. The membership request form is visible to anonymous visitors from the login screen.
+```bash
+curl -fsS http://127.0.0.1:8080/livez
+curl -fsS http://127.0.0.1:8080/readyz
+curl -fsS http://127.0.0.1:8080/healthz
+```
+
+Run the fast checks from `backend/`:
+
+```bash
+gofmt -d .
+go vet ./...
+go test -race ./...
+go build ./cmd/flowd
+```
+
+Run the web checks from `web/`:
+
+```bash
+npm run typecheck
+npm run lint
+npm run build
+```
+
+See [DEVELOPMENT_GUIDE.md](docs/DEVELOPMENT_GUIDE.md) for the PostgreSQL migration test and the explicitly destructive, disposable-only real Navidrome contract suite.
 
 ## Key Architecture Decisions
 
@@ -117,35 +111,41 @@ Navigate to your Caddy domain. Log in with the admin credentials. The membership
 |---|---|---|
 | Backend | Go modular monolith | Single deployable, clear internal boundaries, user already experienced |
 | Database | PostgreSQL | Durable, multi-user, supports Flow's own auth/membership/state alongside Navidrome's SQLite |
-| Navidrome access | Internal network only | Members never touch Navidrome's admin endpoints; Navidrome publishes **zero** public ports (compose invariant + deployment test) |
-| Per-user credentials | Flow mints short-lived, per-user Navidrome stream URLs (member's own cached JWT) | Members can never see admin credentials or other members' credentials |
-| Synchronized playback | In-memory engine + Postgres checkpoints | Single instance in V1; no Redis; crash-safe via checkpoint-or-end |
+| Streaming | **Flow is the only client-facing streaming gateway** (ADR-001) | Navidrome stays on the private Docker network; no client ever receives Navidrome credentials, JWTs, or internal addresses; Flow authorizes every stream request and proxies audio (Range-aware, streamed, no whole-file buffering) |
+| Browser auth | Opaque server-side sessions (ADR-002) | Random tokens, SHA-256 hashes in Postgres, HttpOnly/SameSite cookies, immediate server-side revocation; future native clients get a separately defined bearer mechanism |
+| Navidrome admin bootstrap | Operator-assisted first-run (ADR-003) | Flow cannot create Navidrome's first admin through an authenticated API; the operator initializes Navidrome, then hands credentials to Flow |
+| Membership provisioning | Durable, retry-safe state machine (ADR-004) | Postgres and Navidrome cannot share one transaction; provisioning has explicit states, idempotent steps, compensation, and audit |
+| Synchronized playback | In-memory engine + Postgres checkpoints, safe-end on restart (ADRs 005/006) | Single instance in V1; no Redis; serial executor, version + event sequence, persisted DJ lease |
 | Web serving | Caddy-served static bundle (separate from the API container) | Caddy handles TLS + routing + security headers; SPA is a plain static site |
-| Upload | Shared volume write + scan trigger | Navidrome watches the folder; no custom file endpoint needed; original files stay intact |
+| Uploads | Same-filesystem sibling staging, full validation/fsync, atomic new-album directory rename, scan trigger | Separate volumes are not treated as atomic |
 | Client in V1.0.0 | Web only | Reduce delivery risk; same API contract supports Android/desktop later |
 
 ## V1.0.0 Scope
 
 **In:**
-- Admin authentication and account bootstrap
-- Membership request → approval → member account lifecycle
-- Read-only music library (browse, search, stream)
-- Persistent player with queue
+- Operator-assisted Navidrome admin bootstrap + admin Flow authentication (opaque sessions)
+- Membership request → approval → durable provisioning → member account lifecycle
+- Read-only music library (browse, search)
+- Secure streaming gateway: all audio flows through Flow (no client-side Navidrome credentials)
+- Persistent player with queue, multi-device concurrency (revision control)
 - Admin-managed playlists, read-only for members
 - Individual playback mode
-- Synchronized playback mode (WebSocket, server-authoritative)
+- Synchronized playback mode (WebSocket, server-authoritative; safe-end on restart)
+- Admin uploads via validated staging pipeline + scan trigger
 - Basic theme system (5 starter themes, per-user selection)
 - FLAC/MP3/AAC support
 - Docker Compose deployment with Caddy
-- Admin upload via shared volume
 
 **Deferred to V1.x / V2.0.0:**
 - Android app (background playback, offline)
 - Tauri desktop app
+- Native-client bearer-session mechanism (V1 is browser-only sessions; shape reserved, ADR-002)
 - Offline downloads for members
 - Community themes
 - Multiple admin accounts / roles beyond admin + member
 - Advanced social features (chat, listening history sharing)
+- Advanced metadata editing and destructive library operations (moved out of the V1 critical path; see ROADMAP)
+- Sync session auto-resume across restarts (V1 ends shared sessions safely; NFR-REL-004)
 
 See `docs/ROADMAP.md` for the full milestone breakdown.
 
@@ -164,3 +164,7 @@ See `docs/ROADMAP.md` for the full milestone breakdown.
 | `docs/DEPLOYMENT.md` | Docker Compose, Caddy config, environment variables, backup strategy |
 | `docs/DEVELOPMENT_GUIDE.md` | Local dev workflow, naming, branching, CI/CD, testing strategy |
 | `docs/ROADMAP.md` | V1.0.0 → V1.x → V2.0.0 milestones and task breakdown |
+| `docs/decisions/ADR-001…006.md` | Architecture Decision Records: streaming gateway, sessions, admin bootstrap, provisioning, restart policy, event ordering |
+| `docs/ARCHITECTURE_STATUS.md` | Reconciliation decisions, contradictions resolved, and evidence status |
+| `docs/CONTRACT_MATRIX.md` | Normative contract ownership and cross-document references |
+| `CHANGELOG.md` | Repository changes and remaining verification work |

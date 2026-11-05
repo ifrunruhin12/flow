@@ -14,6 +14,8 @@ The platform supports two distinct listening modes that the administrator switch
 - **Individual Mode** — every listener controls their own playback independently
 - **Synchronized Mode** — one shared playback session; the administrator is the DJ/host; all members listen to the same track at the same position
 
+*Note:* audio (in both modes) flows through the **Flow streaming gateway** — each client streams through Flow's authorized `/audio` endpoint; no client holds Navidrome credentials. Audio bytes transit Flow's incremental proxy, while the synchronized-playback WebSocket carries control events only (ADR-001).
+
 The visual identity is a core product feature. Flow ships with a token-based theme system and at least five visually distinct theme directions. A user's theme choice is personal and does not affect other members.
 
 ---
@@ -24,7 +26,7 @@ The visual identity is a core product feature. Flow ships with a token-based the
 
 | Capability | Details |
 |---|---|
-| Music library | Upload FLAC/MP3/AAC, manage metadata, organize artists/albums, delete tracks |
+| Music library | Upload FLAC/MP3/AAC and read indexed metadata. Tag editing and index/file deletion are V1.x. |
 | Playlists | Create, edit, delete admin playlists (visible to all members) |
 | Membership | Review approval requests, approve/reject, create/suspend/remove member accounts |
 | Platform | Switch between Individual and Synchronized modes, control synchronized playback |
@@ -36,7 +38,7 @@ The visual identity is a core product feature. Flow ships with a token-based the
 | Capability | Details |
 |---|---|
 | Browse | Albums, artists, songs, search |
-| Stream | Any track in the library at original or transcribed quality |
+| Stream | Any track in the library at original or transcoded quality |
 | Play (Individual) | Control own play/pause, next/prev, seek, queue, volume |
 | Play (Sync) | Listen to shared session; follow admin's track selection; no independent control |
 | Favorites | Personal star/unstar on songs and albums (V1) |
@@ -72,8 +74,8 @@ A single shared session is created when the admin switches to Synchronized Mode.
 - Session is server-authoritative
 
 **Member behavior:**
-- All members stream the same track independently from Navidrome
-- No admin audio is relayed — each client has its own stream
+- All members stream the same track independently, **through the Flow streaming gateway** (ADR-001)
+- No admin audio is relayed — each client has its own authorized stream; no client holds Navidrome credentials
 - Members have no playback controls in sync mode
 - Late-joining members enter the currently active shared session and sync to the current position
 - Disconnected members can rejoin; their position is resynchronized on reconnect
@@ -82,12 +84,13 @@ A single shared session is created when the admin switches to Synchronized Mode.
 
 The Flow backend maintains:
 - A shared session object: current track, queue, playback state (playing/paused), reference timestamp
-- A session version counter — incremented on every admin control action
+- A session **version** counter — incremented on every admin content action
+- A monotonic **event sequence** — one authoritative state event per sequence value, including lifecycle events (ADR-006)
 - A server timestamp for each state transition
 
 Clients report their playback position periodically (heartbeat). The coordinator computes a drift offset and sends correction events (seek to target position, or pause) to clients that drift beyond a threshold (default: 2 seconds).
 
-No audio is relayed through the server. All audio flows directly from Navidrome to each client. The WebSocket channel is for control events only.
+No audio is relayed through the WebSocket synchronization bus. All audio bytes flow through the Flow streaming gateway to Navidrome; the WebSocket channel carries control events only.
 
 ### 3.3 Mode Transition Rules
 
@@ -95,10 +98,10 @@ No audio is relayed through the server. All audio flows directly from Navidrome 
 |---|---|
 | Individual → Synchronized | Admin initiates. Admin's current playback position and track are used to seed the shared session. Members are notified of the mode change and begin playing the seeded track at the seeded position. Members who are not currently playing also join at the seeded position. |
 | Synchronized → Individual | Admin ends the session. All members receive a "session ended" event. Each member's individual session state is restored (or reset to empty if they had none). |
-| Admin disconnects (sync active) | Shared session pauses. Members remain connected to the shared session but are in a paused state with a "DJ disconnected — resuming shortly" indicator. Admin has 90 seconds to reconnect and resume. After 90 seconds the shared session ends and the platform falls back to Individual Mode automatically. |
+| Admin disconnects (sync active) | Shared session pauses. Members remain connected with a "DJ disconnected — resuming shortly" indicator. The admin has 90 seconds to reconnect, acquire a newly rotated connection-bound lease, and explicitly play or end. After 90 seconds the shared session ends and the platform falls back to Individual Mode automatically. |
 | Member disconnects | Member can rejoin. On reconnect, the client requests the current session state and synchronizes. |
 | New member joins while sync active | Member enters the current shared session and synchronizes to the current track/position. |
-| Platform restart | Shared session state is recovered from Postgres. Admins and members reconnect and resume. |
+| Platform restart | V1: the shared session **ends safely** and the platform falls back to Individual Mode (ADR-005); individual sessions remain persisted and restorable. Auto-resume of a shared session is a V1.x improvement. |
 
 These rules are documented and must be implemented exactly as specified. They are part of the V1.0.0 contract.
 
@@ -127,7 +130,8 @@ These rules are documented and must be implemented exactly as specified. They ar
    ACTIVE status (member can log in and stream)
         |
         +---- Admin suspends --> SUSPENDED status (login blocked, data preserved)
-        +---- Admin removes   --> DELETED status (account disabled, data optionally purged)
+        +---- Admin removes   --> DELETED status (Flow access revoked immediately;
+                                  Navidrome account cleanup retries durably)
 ```
 
 - Registration is the only anonymous action available on the platform
@@ -152,19 +156,20 @@ All music files live in a shared volume. Navidrome indexes them. Flow does not m
 
 Transcoding is optional and controlled by Navidrome's transcoding pipeline. Original files are never modified or transcoded at rest.
 
-### 5.3 Upload Flow (Admin, V1)
+### 5.3 Upload Flow (Admin, V1 — staged pipeline, task G)
 
 1. Admin uses the web upload screen (drag-and-drop folder)
-2. Flow backend writes files directly into the Navidrome music folder (shared volume, read-write for Flow backend)
-3. Flow backend triggers a Navidrome scan via the Subsonic API (admin credential)
-4. New tracks appear in the library after the scan completes
+2. Flow streams one new album directory into `<music-root>/.flow-staging/<batch>` and validates size, type, paths, symlinks, declared byte counts, and collisions. The staging directory and `<music-root>/library` are sibling directories on the **same filesystem**; Navidrome is mounted only on `<music-root>/library`.
+3. After every file is closed, synced, and validated, Flow atomically renames the completed album directory into the library. V1 rejects an existing destination directory rather than merging or overwriting it.
+4. Flow backend triggers a Navidrome scan; scan status and per-file errors are recorded (`upload_operations`)
+5. New tracks appear in the library after the scan completes
 
-Original files are preserved. No re-encoding. No duplicate detection in V1 (documented as a V1.x improvement).
+Original files are preserved. No re-encoding. No duplicate detection in V1 (documented as a V1.x improvement). A durable batch manifest lets startup recovery remove abandoned `.part` files, resume a pre-promotion batch, recognize a completed rename, and trigger a scan that was not yet started. Upload pipeline details: NAVIDROME_INTEGRATION §6, SECURITY §7.
 
 ### 5.4 Metadata
 
 - Read from Navidrome's index (tags embedded in files)
-- Admin can edit metadata via Flow admin UI → proxied to Navidrome's native API
+- V1 metadata is read-only in Flow; advanced tag editing is V1.x
 - No separate metadata database in Flow
 
 ---
@@ -208,7 +213,7 @@ Each theme file defines:
 
 ### 7.3 V1 Theme Scope
 
-Five starter themes shipped as static CSS files. Community themes (user-uploaded, runtime switching without reload) are V1.x.
+Five starter themes ship as static CSS files, and users switch among those built-in themes without a full reload in V1. Custom/community theme upload and hot-application of newly uploaded token CSS are V1.x.
 
 ---
 
@@ -230,7 +235,8 @@ All clients connect to the same Flow backend. The REST + WebSocket API contract 
 - **Original quality**: FLAC streams at full quality by default. No forced transcoding.
 - **Personal sanctuary**: Visual identity is distinctive and customizable. Not a generic streaming UI.
 - **Admin authority**: Admin controls are server-authoritative. No client can escalate permissions.
-- **Reliability**: Platform restarts do not lose individual playback state. Synchronized sessions recover.
+- **Credential isolation**: No client ever holds Navidrome credentials; audio flows only through the Flow gateway (ADR-001).
+- **Reliability**: Platform restarts do not lose individual playback state. In V1, a restart ends a shared session safely (ADR-005); individual sessions restore.
 - **Low latency**: Synchronized mode should feel "together" — target ±2 seconds drift tolerance with correction.
 
 ---
@@ -239,6 +245,7 @@ All clients connect to the same Flow backend. The REST + WebSocket API contract 
 
 - Android app (all features)
 - Desktop Tauri app
+- Native-client bearer-session auth (V1 is browser cookie sessions; the bearer mechanism is reserved — ADR-002)
 - Offline downloads for members
 - Community/user-submitted themes
 - Multiple admin accounts
@@ -248,5 +255,8 @@ All clients connect to the same Flow backend. The REST + WebSocket API contract 
 - Advanced audio analysis (sonic similarity search is Navidrome-native; exposed if available, not a V1 priority)
 - Duplicate detection on upload
 - Multi-library / multi-collection support
+- **Advanced metadata editing** (tag write + affected-album re-scan) — V1.x (FR-ADM-009)
+- **Destructive library operations** (delete index row or physical file) — V1.x (FR-ADM-003)
+- **Auto-resume of a shared session across a backend restart** — V1 ends shared sessions safely (ADR-005); V1.x
 
 These items are designed for but not implemented in V1.0.0. The architecture must not preclude them.

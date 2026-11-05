@@ -1,0 +1,16 @@
+:root {
+  color-scheme: dark;
+  --flow-bg: #090b10;
+  --flow-surface: #11151d;
+  --flow-surface-raised: #191f2a;
+  --flow-border: #2b3442;
+  --flow-text: #f4f7fb;
+  --flow-muted: #97a4b7;
+  --flow-accent: #7c5cff;
+  --flow-accent-strong: #987fff;
+  --flow-success: #42d3a2;
+  --flow-warning: #ffbd5c;
+  --flow-danger: #ff6b7a;
+  --flow-focus: #c4b5fd;
+  --flow-shadow: rgba(0, 0, 0, 0.35);
+}

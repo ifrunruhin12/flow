@@ -1,0 +1,13 @@
+.env
+deploy/.env.local
+deploy/secrets/*
+!deploy/secrets/.gitkeep
+dev/music-root/library/*
+!dev/music-root/library/.gitkeep
+dev/music-root/.flow-staging/*
+!dev/music-root/.flow-staging/.gitkeep
+dev/navidrome-data/
+coverage.out
+backend/flowd
+web/node_modules/
+web/dist/

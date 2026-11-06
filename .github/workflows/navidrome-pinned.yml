@@ -27,7 +27,7 @@ jobs:
           ./dev/create-audio-fixture.sh
       - name: Start pinned Navidrome
         working-directory: .
-        run: docker compose -f deploy/docker-compose.dev.yml up -d navidrome
+        run: docker compose -p flow-contract -f deploy/docker-compose.dev.yml -f deploy/docker-compose.playback-test.yml up -d navidrome
       - name: Wait for Navidrome
         working-directory: .
         run: |
@@ -35,7 +35,7 @@ jobs:
             curl -fsS http://127.0.0.1:4533/ping && exit 0
             sleep 1
           done
-          docker compose -f deploy/docker-compose.dev.yml logs navidrome
+          docker compose -p flow-contract -f deploy/docker-compose.dev.yml -f deploy/docker-compose.playback-test.yml logs navidrome
           exit 1
       - name: Run real contract suite
         env:
@@ -55,3 +55,7 @@ jobs:
         with:
           name: navidrome-image-digest
           path: navidrome-image-digest.txt
+      - name: Dispose test Navidrome volume
+        if: always()
+        working-directory: .
+        run: docker compose -p flow-contract -f deploy/docker-compose.dev.yml -f deploy/docker-compose.playback-test.yml down -v

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — V1 architecture reconciliation and M0–M2 implementation
+## Unreleased — V1 architecture reconciliation and M0–M3 implementation
 
 ### Architecture and documentation
 
@@ -51,6 +51,18 @@
 - Added no database migration: Navidrome remains the media-index source of truth and all M2 process state is intentionally transient.
 - Corrected the pre-M2 architecture diagram that registered a stream after opening upstream; the implemented and documented order is register → authoritative recheck → media lookup → upstream open.
 
+### M3 implementation — individual playback
+
+- Added ADR-007 and an M0–M2 readiness report. Fixed the blocking Vite 5174/5173 origin mismatch with strict port selection and the live-contract fixture mount through an isolated test-only Compose override.
+- Added reversible migration `0003_m3_individual_playback`: one `session_state` row per user, existing-user backfill, transactional user-insert trigger, canonical empty/queue/index/current/position/volume/status constraints, and cascading physical-account cleanup.
+- Added the individual playback package and GET/PUT/DELETE `/api/playback/session`. All ownership comes from the authenticated principal; each write rechecks account/session authority and commits a conditional revision UPDATE. Stale writes return 409 with the latest own session.
+- Implemented validated current selection, play/pause, seek, queue append/remove/move/replacement, deterministic next/previous/boundaries, duplicate occurrence identity, volume, stable shuffle and guarded checkpoint/end commands.
+- Replaced the M2 ephemeral player with one shared account-keyed React provider/controller/audio element. Added global controls, queue editing/select/clear, album/listing/search/song/artist integration, saved-state restore, local loading/buffering/error states, optional Media Session and source teardown/retry.
+- Added 10-second active checkpoints plus immediate intentional commands, REST refresh every 15 seconds/on visible focus or online, visible 409 reconciliation, no automatic stale retries/merges and no unload durability dependency.
+- Fixed natural end racing an earlier local command, stale audio-error events, failed-source retry, and actual-position failure checkpoints. A rejected stopped-intent callback preserves conflict reconciliation. Retained unavailable media remains removable and can be durably paused.
+- Added Node frontend/controller/API tests, real pgx CAS/lifecycle/restart tests, a listener-free SQL smoke, and an opt-in live test combining the real Flow executable, PostgreSQL, pinned Navidrome, gateway and Chromium with an actual Flow process restart.
+- Added `playback-live.yml` and frontend test CI. Updated the product/API/playback/schema/architecture/development/requirements/roadmap documents; M4A remains unimplemented.
+
 ### Verification status
 
 - Passed locally: formatting check, `go test -race ./...`, `go vet ./...`, backend build, integration-suite compilation, deterministic fixture validation, Compose configuration rendering, and documentation consistency checks.
@@ -62,3 +74,5 @@
 - The deterministic M2 suite covers a 32 MiB incremental stream plus eight concurrent 4 MiB bounded-copy streams, original/transcoded responses, Range/`206`/sanitized `416`, `Accept-Ranges: none`, cancellation, active suspension, registration races, concurrent refresh, refresh eviction fencing, malformed responses, member playlist-write denial, and credential/internal-address leakage.
 - Added explicit regression coverage for Navidrome login `401`/`403` mapping, upstream deadline mapping, and duplicate/unknown library query rejection.
 - The extended real Navidrome `v0.64.2` M2 contract (including album/artist/song lists and details, raw Range, both transcodes, artwork, stars, and playlist member reads) was not executed in this environment: Docker socket access was denied and no Navidrome listener was available on `127.0.0.1:4533`. M2 remains pending that live completion-gate run; no pass is claimed.
+- M3 deterministic frontend tests, backend tests, integration compilation and SQL smoke have been executed. Current results and commands are in `docs/M3_REPORT.md`.
+- M3's live PostgreSQL/Chromium/Navidrome/process-restart gates remain outstanding because Docker/socket access and Chromium startup are restricted. SQL smoke and transport doubles are not claimed as a browser playback pass. M3 is not marked fully complete until the live gates pass.

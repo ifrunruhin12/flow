@@ -1,7 +1,7 @@
 # Flow — Architecture
 
 Version: 1.1.0-draft (supersedes 1.0.0-draft)
-Key changes in this revision: Flow is the **only** client-facing streaming gateway (ADR-001); browser authentication uses **opaque server-side sessions**, not JWTs (ADR-002); Navidrome admin bootstrap is **operator-assisted** (ADR-003); membership provisioning is a **durable state machine**, not a cross-system transaction (ADR-004); V1 shared sessions **end safely on backend restart** (ADR-005); sync events use **version + event sequence** (ADR-006).
+Key changes in this revision: Flow is the **only** client-facing streaming gateway (ADR-001); browser authentication uses **opaque server-side sessions** (ADR-002); bootstrap and membership follow ADR-003/004; future synchronized playback follows ADR-005/006; M3 individual persistence and browser lifecycle follow ADR-007.
 
 ---
 
@@ -77,7 +77,7 @@ backend/internal/
 | Data | In-memory | Postgres | Notes |
 |---|---|---|---|
 | Opaque sessions (token hash → user, expiry) | no authoritative cache in V1 | `sessions` table is the source of truth | Indexed lookup by hash; revocation = row delete |
-| Individual session (queue, position, volume, revision) | yes | yes | Postgres is source of truth; memory is a hot cache with revision CAS |
+| Individual session (queue, position, volume, shuffle, intent, revision) | browser snapshot only | yes | One row per account; direct database reads and conditional revision UPDATE; no backend hot cache (ADR-007) |
 | Shared sync session | yes | yes (checkpoint on every mutation, authoritative) | V1: crash ⇒ session ended safely (ADR-005); checkpoints are the recovery boundary |
 | DJ lease | active connection + raw token | generation + token hash + connection id + grace deadline | Reconnect rotates the server-issued token/generation and fences the old socket; restart ends the session |
 | Sync event sequence | yes | `sync_events` (bounded, per-session) | One authoritative state event per `event_seq`; every event carries current content version |
@@ -99,7 +99,7 @@ backend/internal/
 | Migrations | embedded, sequential SQL runner + PostgreSQL advisory lock | External migration framework | M0 needs a small reviewed runner, a ledger, per-migration transactions, and concurrency protection without another dependency. Policy in DEVELOPMENT_GUIDE §7. |
 | Frontend | React 18 + TypeScript + Vite | Vue, Svelte, Solid | Spec preference; ecosystem fit for audio components and theming. |
 | Styling | Tailwind CSS v4 + CSS custom properties | CSS-in-JS, styled-components | Tailwind utility classes consume token CSS variables; themes = token files, zero runtime cost. CSS-in-JS would conflict with the token architecture and add runtime. |
-| Web state | TanStack Query (server state) + Zustand (client state) | Redux, Jotai | Query caches the read-heavy library APIs well. Minimal store for player/sync state. |
+| Web state | TanStack Query + React context/controller | Additional client state libraries | Query owns library/auth data. One M3 controller adopts acknowledged CAS snapshots and owns local audio; context survives navigation (ADR-007). |
 | Android (V1.x) | Kotlin + Compose + Media3 ExoPlayer | WebView wrapper | Explicit requirement: no WebView wrapper. Media3 gives background playback, notifications, Bluetooth controls. |
 | Desktop (V1.x) | Tauri 2 (reuses web bundle) | Electron, native per-OS | Smaller binaries, reuses the web app; system media keys via Tauri's media events (V1.x). |
 | Process model | Docker Compose, 4 services | k8s, systemd, bare binaries | Personal hosting; compose + Caddy is the documented Navidrome deployment model too. |
@@ -190,7 +190,7 @@ Client (Flow session cookie)
         on client abort: cancel upstream (context cancel)
         on member suspension/delete: block registration + cancel all user handles + generation-evict JWT
         on reactivation: unblock registration (the next credential is acquired lazily)
-  Client ──PATCH /api/playback/session──► Flow → Postgres (revision CAS)
+  Client ──PUT /api/playback/session──► Flow → Postgres (revision CAS)
 ```
 
 The register-before-recheck order is deliberate. Opening upstream before registration leaves a suspension window in which a new stream can escape cancellation. With the M2 order, a concurrent suspension either wins the registry lock and rejects the request, or sees and cancels the new handle; the post-registration account read closes the database-commit/lifecycle-callback window.
@@ -257,7 +257,29 @@ web/src/
 └── themes/         token CSS files (5 themes)
 ```
 
-Audio playback in the browser: a single `<audio>` element owned by the player module (a context so it survives route changes), pointing at the Flow `/audio/…` gateway. The sync module drives the same element when mode = synchronized. Format negotiation: if the browser can decode FLAC (`Audio.isTypeSupported('audio/flac')`), request `original`; otherwise request the verified `opus` transcode (whose representation content type is typically Ogg/Opus) — a per-user decision, cached in `user_settings`.
+M3 uses one account-keyed `PlayerProvider`, one `PlayerController`, and one
+`<audio>` element. Library views consume the shared context; application navigation
+preserves both the element and source. The controller serializes mutations and
+adopts acknowledged state. A 409 or newer REST snapshot pauses local audio and
+restores the authoritative state without an automatic retry or queue merge.
+
+Format selection uses `HTMLMediaElement.canPlayType` for the song's content type,
+then FLAC/Opus capability, with MP3 fallback. Original seeks use supported native
+Range behavior; a transcode reloads `/audio/{id}` with integer `offsetSeconds`.
+Replacing/retrying a source and provider teardown cancel the old stream with
+pause/remove-src/load. Persisted preferences remain M13. Optional Media Session
+actions invoke the same persisted controls and are cleaned up with the provider.
+
+Position events render only. The provider checkpoints active media every 10
+seconds and refreshes REST every 15 seconds/on visible focus or online. Commands
+persist immediately. Restore has no age cutoff; a known completed track resumes
+locally from zero, and restored playing intent never implies autoplay. Failed
+stream loads preserve the queue and offer explicit retry. Multi-device control
+coordinates durable state, with no exclusive device lease or remote audio timing.
+API §4 and PLAYBACK_SYSTEM §2 own the detailed contracts.
+
+The component trees also describe later V1 milestones. No synchronized executor,
+WebSocket, shared state, upload, or theme package is implemented as part of M3.
 
 ## 7. Key Architectural Invariants
 

@@ -30,10 +30,11 @@ flow/
 │   ├── internal/library/      ← Flow-owned library models and pagination
 │   ├── internal/navidrome/    ← redacting Navidrome adapter and JWT cache
 │   ├── internal/playlist/     ← member reads and admin-curated playlist logic
+│   ├── internal/playback/     ← per-account PostgreSQL state and revision CAS
 │   ├── internal/streaming/    ← secure audio/artwork gateway and lifecycle registry
 │   ├── integration/           ← opt-in real Navidrome contract suite
 │   └── migrations/            ← embedded milestone-owned SQL
-├── web/                       ← React/TypeScript M2 browser application and local player
+├── web/                       ← React/TypeScript library and persistent M3 global player
 ├── deploy/
 │   ├── docker-compose.dev.yml ← development PostgreSQL + Navidrome only
 │   └── .env.example           ← backend development configuration template
@@ -43,19 +44,27 @@ flow/
 └── CHANGELOG.md
 ```
 
-Production Compose/Caddy and later domain packages are introduced by their roadmap milestones. M2 contains the library and one browser-local player; it intentionally contains no M3 playback persistence/queue state, uploads, themes, or synchronized-playback placeholders.
+Production Compose/Caddy and later domain packages are introduced by their roadmap milestones. M3 adds individual playback persistence and a global queue/player. It introduces no synchronized-playback, upload, or theme placeholders.
 
 ## Current Status
 
 Phase 1 architecture reconciliation, M0, and the M1 authentication/membership implementation are present. M2 library, artwork, playlists, and secure streaming are implemented with fast security/race tests green. The M2 completion gate remains pending one live run of the extended contract suite against the pinned Navidrome image; Docker was unavailable in the latest implementation environment.
 
-## Run M2 Locally
+M3 individual playback is implemented: one row per user, atomic revision CAS,
+durable controls/10-second checkpoints, global audio/queue UI, restore, and explicit
+multi-device conflict reconciliation. Deterministic tests pass; live PostgreSQL
+and browser/Navidrome/restart gates remain pending in the socket-restricted local
+environment. [M3_REPORT.md](docs/M3_REPORT.md) records the evidence and limitations.
+CI includes a real M3 gate. M4A has not started.
+
+## Run M3 Locally
 
 Prerequisites: Go 1.27.3, Node 20.18.2, Docker with Compose, and FFmpeg only if generating the deterministic audio fixture.
 
 ```bash
 cp deploy/.env.example deploy/.env.local
 ./dev/create-audio-fixture.sh
+sh dev/create-playback-fixture.sh
 ./dev/create-credential-keyring.sh
 docker compose --env-file deploy/.env.local -f deploy/docker-compose.dev.yml up -d postgres navidrome
 ```
@@ -98,6 +107,7 @@ go build ./cmd/flowd
 Run the web checks from `web/`:
 
 ```bash
+npm test
 npm run typecheck
 npm run lint
 npm run build
@@ -164,7 +174,8 @@ See `docs/ROADMAP.md` for the full milestone breakdown.
 | `docs/DEPLOYMENT.md` | Docker Compose, Caddy config, environment variables, backup strategy |
 | `docs/DEVELOPMENT_GUIDE.md` | Local dev workflow, naming, branching, CI/CD, testing strategy |
 | `docs/ROADMAP.md` | V1.0.0 → V1.x → V2.0.0 milestones and task breakdown |
-| `docs/decisions/ADR-001…006.md` | Architecture Decision Records: streaming gateway, sessions, admin bootstrap, provisioning, restart policy, event ordering |
+| `docs/decisions/ADR-001…007.md` | Architecture Decision Records including M3 persistence/browser transport |
+| `docs/M3_READINESS.md` / `docs/M3_REPORT.md` | M0–M2 audit and M3 implementation/verification report |
 | `docs/ARCHITECTURE_STATUS.md` | Reconciliation decisions, contradictions resolved, and evidence status |
 | `docs/CONTRACT_MATRIX.md` | Normative contract ownership and cross-document references |
 | `CHANGELOG.md` | Repository changes and remaining verification work |

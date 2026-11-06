@@ -9,7 +9,7 @@ The owner document defines the normative contract. References may summarize it b
 | Membership provisioning and crash recovery | ADR-004 | REQUIREMENTS FR-MEM-004, DATABASE_SCHEMA `users`, NAVIDROME_INTEGRATION §4, API §7, ROADMAP M1 |
 | Streaming gateway | ADR-001 | REQUIREMENTS FR-STRM, ARCHITECTURE §5.2, API §2.1, PLAYBACK_SYSTEM §6/§10, SECURITY §4 |
 | Upload lifecycle and recovery | NAVIDROME_INTEGRATION §6 | REQUIREMENTS FR-ADM-005/006, PRODUCT_SPEC §5.3, DATABASE_SCHEMA `upload_operations`, SECURITY §7, DEPLOYMENT topology, ROADMAP M5 |
-| Individual playback CAS and persistence | PLAYBACK_SYSTEM §2 | REQUIREMENTS FR-IND-001…006, API §4, DATABASE_SCHEMA `session_state`, ROADMAP M3 |
+| Individual playback CAS, persistence and browser transport | PLAYBACK_SYSTEM §2; ADR-007 | REQUIREMENTS FR-IND-001…006, API §4, DATABASE_SCHEMA `session_state`, ARCHITECTURE §6, ROADMAP M3 |
 | Sync state, `version`, and `event_seq` | ADR-006 | REQUIREMENTS FR-SYN-007, DATABASE_SCHEMA `shared_sessions`/`sync_events`, API §5/§9, PLAYBACK_SYSTEM §3, ROADMAP M4A/M4B |
 | DJ lease, disconnect, and reconnect | ADR-005 | REQUIREMENTS FR-SYN-008, DATABASE_SCHEMA `shared_sessions`, API §5, PLAYBACK_SYSTEM §3.5/§4, SECURITY acceptance tests |
 | Backend restart | ADR-005 | PRODUCT_SPEC §3.3, REQUIREMENTS FR-SYN-011/NFR-REL-004, PLAYBACK_SYSTEM §3.6, DEVELOPMENT_GUIDE §5 |

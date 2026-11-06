@@ -114,15 +114,39 @@ Indexes: (status, created_at).
 |---|---|---|
 | user_id | PK, FK→users | 1:1 |
 | revision | bigint NOT NULL default 0 | Every write carries `ifRevision`; mismatch ⇒ HTTP 409 with current state. The client reloads or explicitly retries replacement; the server never merges. |
-| queue | jsonb NOT NULL | `[{mediaId, addedAt}, …]` in play order |
-| queue_index | int NOT NULL default 0 | |
+| queue | jsonb NOT NULL default '[]' | Canonical `[{mediaId, addedAt}, …]`; array, at most 200; timestamps are server-owned; duplicate IDs allowed |
+| queue_index | int NOT NULL default 0 | Nonnegative; 0 for empty, otherwise in bounds |
 | current_media_id | text NULL | |
-| position_ms | int NOT NULL default 0 | |
+| position_ms | int NOT NULL default 0 | 0…86,400,000; empty session is 0; service validates authoritative known duration |
 | volume | numeric(4,3) NOT NULL default 1.0 CHECK (volume BETWEEN 0 AND 1) | |
 | shuffle | boolean NOT NULL default false | |
-| updated_at | timestamptz | Every accepted CAS write commits immediately. The client may limit active-playback position writes to one per 10 s; unload flush is best-effort only. |
+| playback_status | text NOT NULL default 'paused' CHECK (IN ('paused','playing')) | Saved browser transport intent, not a server audio engine |
+| updated_at | timestamptz NOT NULL default now() | Every accepted CAS commits immediately. Active playback checkpoints every 10 s; no unload guarantee. |
 
 Multi-device rule (PLAYBACK_SYSTEM §2): one persisted session per user. A stale client receives 409 + the current row and must either reload or deliberately replace state using the returned revision. V1 defines no automatic queue union or last-writer-wins merge.
+
+Migration `0003_m3_individual_playback` backfills every existing user and installs
+an AFTER INSERT user trigger to create exactly one default row transactionally.
+`user_id` uses ON DELETE CASCADE; suspension/soft deletion preserve state. Clear
+updates the same row through CAS, never deleting it or resetting revision.
+Checks enforce nonnegative revision, array/bounded queue, current/index agreement,
+and canonical empty state. Service validation checks media IDs, occurrence
+timestamps, queue operations, and duration. No media metadata or credentials are
+stored here. The commit transaction rechecks/locks current account and Flow
+session before the conditional revision UPDATE. No playback cache is authoritative.
+The initial read constructs and validates a proposed state; it grants no write
+authority. `UPDATE ... WHERE user_id=$owner AND revision=$expected RETURNING ...`
+advances revision/timestamp atomically. A zero-row update reads the latest own
+snapshot for 409. User/session share locks follow lifecycle lock order and are
+never held during Navidrome requests. The API accepts revisions below the largest
+JSON-safe integer, leaving room for the increment; all response timestamps are UTC.
+
+`internal/playback/postgres_test.go` checks M1 upgrade, user backfill/trigger,
+competing real writes, a checkpoint/track race, revocation, and a new pool/service
+restore. The separately tagged live suite restarts the actual Flow process.
+These live checks require PostgreSQL and remain unexecuted in the restricted
+implementation environment; the PostgreSQL 18.6 single-user SQL smoke is narrower
+evidence and does not substitute for the pinned PostgreSQL 16/pgx gate.
 
 ### 2.6 `shared_sessions` (synchronized mode)
 

@@ -1,7 +1,7 @@
 # Flow — Architecture Decision and Reconciliation Status
 
 Status: V1 architecture baseline after reconciliation
-Date: 2026-11-04
+Date: 2026-11-07
 
 ## Accepted baseline
 
@@ -14,6 +14,7 @@ Date: 2026-11-04
 - Navidrome first-admin creation is operator-assisted.
 - Member provisioning is durable and retry-safe; the encrypted reusable member credential commits before any remote create call.
 - Individual playback uses one row per user and revision CAS. A 409 requires explicit client reconciliation; V1 has no automatic merge algorithm.
+- M3 follows ADR-007: direct PostgreSQL reads/CAS, saved transport intent, one shared React controller/audio element, 10-second checkpoints, 15-second REST refresh and no autoplay on restore. No backend playback hot cache or additional state dependency.
 - Synchronized playback uses one executor, `version` for content, `event_seq` for every authoritative event, one composite event per transaction, and checkpoint-before-broadcast.
 - DJ authority is a server-issued generation + rotated opaque token bound to one authenticated connection. Generation alone is not authority.
 - Reconnect consistency is subscribe-before-snapshot, buffered drain, then live delivery.
@@ -59,6 +60,8 @@ Date: 2026-11-04
 | The live contract test assumed disabled `getShares` returned an HTTP-200 Subsonic failure envelope. | `v0.64.2` registers disabled sharing commands with `h501`, so the verified contract is HTTP 501. The test now checks that exact gate behavior. | NAVIDROME_INTEGRATION, real Navidrome contract suite |
 | M1 required approved members to log in but registration, approval, and direct-create contracts supplied no Flow password or invitation mechanism. | The approved V1 design uses an admin-supplied temporary Flow password communicated out-of-band, a restricted first-login session, and mandatory password replacement. | REQUIREMENTS, API_SPECIFICATION, DATABASE_SCHEMA, SECURITY, ADR-002, ROADMAP |
 | The Flow administrator username was configurable separately from the Navidrome administrator username, but the credential row stored only the Flow username while AEAD requires stable credential identity. | Store `navidrome_username` beside ciphertext/key-version metadata and bind AEAD to it. Member values equal their Flow username; admin values may differ. | DATABASE_SCHEMA, SECURITY, M1 migration/bootstrap implementation |
+| Individual summaries named PATCH, a backend hot cache and Zustand, despite the accepted PUT API and existing React context architecture. Play/pause intent and queue/checkpoint edges were unspecified. | ADR-007 preserves GET/PUT/DELETE, uses direct PostgreSQL CAS, adds saved intent and additive control fields, and defines the shared controller, deterministic queue and guarded checkpoint/restore behavior. | API_SPECIFICATION, PLAYBACK_SYSTEM, DATABASE_SCHEMA, ARCHITECTURE, DEVELOPMENT_GUIDE, REQUIREMENTS |
+| Historical unavailable queue entries could prevent current-item removal or an intentional pause; natural end could self-conflict with an earlier local write. | Retained removal is network-independent; paused checkpoints remain bounded when duration lookup is unavailable. Natural end verifies the captured occurrence after earlier local acknowledgements before sampling dispatch guards; no stale request is replayed. | ADR-007, API_SPECIFICATION, PLAYBACK_SYSTEM, M3 tests |
 
 ## Navidrome evidence status
 
@@ -69,4 +72,9 @@ Date: 2026-11-04
 
 ## Remaining decisions
 
-No unresolved architecture or V1 scope decision blocks implementation. Phase 1 and the M0 completion gate pass. M1 — Authentication and Membership — is the authorized active milestone; later milestones remain out of scope.
+No unresolved architecture or V1 scope decision blocks M3 implementation. M3 code
+and deterministic evidence are present; live PostgreSQL and browser/gateway/
+Navidrome/process-restart completion gates remain pending in the restricted
+implementation environment. See M3_REPORT for actual results. No M4 code started.
+The exact next milestone is M4A — Synchronization State Machine and Backend
+Executor, after the M3 completion gates pass and further work is authorized.

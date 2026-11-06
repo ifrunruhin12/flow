@@ -2,21 +2,14 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useState } from 'react'
 import { AdminDashboard } from '../features/admin'
 import { AuthScreen, PasswordChange } from '../features/auth'
-import { LibraryExperience, PlayerBar } from '../features/library'
+import { LibraryExperience } from '../features/library'
+import { PlayerBar, PlayerProvider } from '../features/player'
 import { errorMessage, getSession, logout } from '../lib/api'
-import type { Song } from '../lib/types'
 
 export function App() {
   const queryClient = useQueryClient()
   const [notice, setNotice] = useState('')
   const [area, setArea] = useState<'library' | 'administration'>('library')
-  const [queue, setQueue] = useState<Song[]>([])
-  const [queueIndex, setQueueIndex] = useState(0)
-  const playQueue = (songs: Song[], index: number) => {
-    if (songs[index] === undefined) return
-    setQueue(songs)
-    setQueueIndex(index)
-  }
   const session = useQuery({ queryKey: ['session'], queryFn: getSession, retry: false })
   const logoutMutation = useMutation({
     mutationFn: logout,
@@ -41,7 +34,8 @@ export function App() {
   }
 
   return (
-    <div className="mx-auto min-h-screen max-w-7xl px-5 py-6 sm:px-8">
+    <PlayerProvider key={session.data.id}>
+    <div className="mx-auto min-h-screen max-w-7xl px-5 py-6 pb-52 sm:px-8">
       <header className="mb-8 flex flex-wrap items-center justify-between gap-4">
         <div>
           <p className="text-xs font-bold uppercase tracking-[0.28em] text-[var(--flow-accent-strong)]">Private listening</p>
@@ -68,13 +62,11 @@ export function App() {
       ) : (
         <LibraryExperience
           isAdmin={session.data.role === 'admin'}
-          onPlay={playQueue}
         />
       )}
-      {queue.length > 0 && (
-        <PlayerBar queue={queue} index={queueIndex} onIndex={setQueueIndex} />
-      )}
+      <PlayerBar />
     </div>
+    </PlayerProvider>
   )
 }
 

@@ -114,3 +114,33 @@ export interface ScanStatus {
   scanType?: string
   elapsedMs: number
 }
+
+export interface PlaybackQueueItem {
+  mediaId: string
+  addedAt: string
+}
+
+export interface PlaybackSession {
+  queue: PlaybackQueueItem[]
+  queueIndex: number
+  currentMediaId: string | null
+  positionMs: number
+  volume: number
+  shuffle: boolean
+  status: 'paused' | 'playing'
+  revision: number
+  updatedAt: string
+}
+
+export interface PlaybackMutation {
+  ifRevision: number
+  queue?: { mediaId: string; addedAt?: string }[]
+  queueIndex?: number
+  currentMediaId?: string | null
+  positionMs?: number
+  volume?: number
+  shuffle?: boolean
+  status?: 'paused' | 'playing'
+  command?: 'next' | 'previous' | 'ended' | 'checkpoint'
+  queueEdit?: { add?: string[]; remove?: number[]; move?: { from: number; to: number } }
+}

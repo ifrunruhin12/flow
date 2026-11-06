@@ -2,7 +2,9 @@
 
 Version: 1.1.0-draft (supersedes 1.0.0-draft)
 Covers: individual sessions, the synchronized engine, drift model, reconnection, mode transitions, failure modes.
-This document is the contract between the `sync` package, the WS layer, and the clients.
+Individual playback is implemented by `playback` and the shared browser player
+(ADR-007). Synchronized sections describe later M4 contracts with the future
+`sync` package/WS layer; M3 introduces none of that implementation.
 Key revisions: restart policy is safe-end (ADR-005); version vs. event sequence distinction (ADR-006); DJ lease generation; individual-session revision control (task F); audio always via the streaming gateway (ADR-001).
 
 ---
@@ -16,7 +18,7 @@ Key revisions: restart policy is safe-end (ADR-005); version vs. event sequence 
 
 ## 2. Individual Mode (baseline, task F)
 
-State per user (Postgres `session_state`, hot-cached in memory) — **one persisted session per account, shared across all that account's devices**:
+State per user (Postgres `session_state`, read directly) — **one persisted session per account, shared across all that account's devices** (ADR-007):
 
 ```go
 type IndividualSession struct {
@@ -26,14 +28,104 @@ type IndividualSession struct {
     PositionMs   int64
     Volume       float32
     Shuffle      bool
+    Status       string // paused | playing: saved intent, not actual browser transport
     Revision     int64   // optimistic concurrency counter
+    UpdatedAt    time.Time
 }
 ```
 
 - Client owns transport locally (play/pause/seek are client-side `<audio>` controls via the `/audio` gateway; the server only persists state for resume).
 - **Concurrency (multi-device):** every write carries `ifRevision`. The server applies it with a single `UPDATE … WHERE user_id=? AND revision=?`, then `revision++`. On mismatch it returns `409 {currentRevision, currentSession}`. V1 performs no automatic queue union or last-writer-wins merge: the client reloads, shows the conflict where appropriate, and may deliberately replace state only with a new CAS request against `currentRevision`.
-- Persistence cadence: queue/current-track/index changes, seeks, pause, track-end, shuffle, and volume are written immediately. While continuously playing, the client may send position checkpoints at most once per 10 s; every accepted request is committed immediately. `visibilitychange`/unload is only an additional best-effort flush.
+- Persistence cadence: intentional play/pause, queue/current-track/index, seek, track-end, shuffle, and volume changes commit immediately. While continuously playing, actual audio position is checkpointed every 10 seconds. There is no unload persistence handler.
 - Resume: on login, `GET /playback/session` → client restores the last durably checkpointed queue, track, and `PositionMs`. V1 does not invent an age-based reset rule; the user can explicitly restart the track.
+
+### 2.1 Canonical queue and controls
+
+- Empty: index 0, null current media, position 0, paused. Default volume 1,
+  shuffle false. Clear retains personal volume/shuffle and advances revision.
+- Queue entries contain only media IDs and server-added timestamps. Duplicates
+  are allowed; occurrence identity survives reorder/removal. Maximum 200.
+- Current media always equals `queue[queueIndex].mediaId` for a nonempty queue.
+  A selected index must be in bounds; contradictory ID/index is invalid.
+- Add appends; first addition to an empty queue selects index 0 and stays paused.
+  Remove noncurrent entries preserves the current occurrence and its position.
+  Remove current selects the first surviving successor, otherwise the nearest
+  predecessor; resets position, retains intent while nonempty. Removing all
+  entries gives the empty state. Move uses the final destination index and
+  preserves current occurrence/position even for duplicate media IDs.
+- Full replacement validates every supplied media ID. Without explicit selection
+  it retains the current occurrence if present, otherwise uses the same removal
+  rule. New track/occurrence selection resets position unless explicitly supplied.
+- Next moves forward and resets position. At the last item it keeps current
+  track/position and pauses. Previous restarts the current track when sampled
+  position is greater than 3,000 ms; otherwise moves backward, or restarts the
+  first item at zero. Empty next/previous are safe accepted no-ops.
+- Shuffle never rewrites the canonical queue: traversal sorts occurrences by
+  SHA-256 of `mediaId + NUL + addedAt` (canonical index breaks ties). It is stable
+  across devices/restarts, has no repeat/wrap, and retains the selected occurrence
+  on toggle. Next/previous use this order. Natural end follows next semantics.
+- New items and selected destinations are checked through member-scoped getSong.
+  Removal is an exception for its retained destination: a missing successor or
+  predecessor cannot prevent removing historical queue occurrences.
+  Historical unavailable entries remain visible/removable; playback stops with
+  an unavailable message rather than silently deleting or skipping them. A
+  Navidrome outage preserves the queue and is retryable by an explicit gesture.
+- Album/playlist playback replaces the queue with the ordered listing and starts
+  the selected item. Flat song/search playback replaces it with the chosen song.
+  Artist top-track listings work like a listing; discography albums can be opened
+  and played. Add-to-queue always appends to the one shared player.
+
+### 2.2 Checkpoints, restore, and browser lifecycle
+
+Sample checkpoint revision, current media ID, canonical index, and actual media
+position together. A checkpoint only updates position of that still-playing
+occurrence. CAS or identity mismatch returns the full 409 snapshot, which the
+browser adopts while pausing; the losing checkpoint is discarded. It is never
+rebased onto a newer revision. Natural-end identity guards prevent a delayed
+audio event from advancing a newly selected track. Natural end waits for this
+browser's earlier pending commands and verifies the captured occurrence before
+sampling the dispatch revision/index; a volume/checkpoint acknowledgement cannot
+lose the end event. It is never retried after an external conflict.
+
+Before intentional transition/pause, capture actual position in the same command.
+Seek commits before moving transport. A failed/uncertain command pauses locally,
+shows that persistence failed, and refreshes state; it is not blindly retried.
+Only successfully committed state is durable. The usual foreground loss window
+is up to 10 seconds plus request latency; background throttling/offline periods
+can extend it. Position progress events only render UI and never write the DB.
+
+One provider per authenticated account owns one audio element; navigation changes
+neither its identity nor source. Replacement explicitly pauses, removes the old
+source, and calls `load()` to cancel it before opening `/audio/{mediaId}`. Cleanup
+removes listeners/timers/Media Session handlers and cancels the stream. Original
+seeking uses the element's supported Range behavior. Non-seekable transcodes are
+reloaded with integer `offsetSeconds`; the displayed position includes that base
+offset. Seeking while paused stays paused. Buffering, load errors, autoplay
+rejection, and explicit retry are visible. Media Session is optional and uses the
+same persisted commands, never an independent player.
+Stream failures persist actual stopped position and paused intent. A rejected or
+discarded failure checkpoint cannot restore an old error over reconciliation or
+a replacement source. Retry cancels
+and reloads the failed source. A retained unavailable destination from queue
+removal pauses and saves paused intent without deleting any other occurrences.
+
+Restore uses the durable position at any session age. There is **no age-based
+resume threshold** (zero minimum); when it is at/beyond a known duration, local
+resume starts at zero. Unknown duration uses the validated saved position.
+Saved `playing` intent does not auto-play on login/refresh or external state
+adoption: actual audio remains paused until a gesture. Metadata is fetched from
+the library, never copied into `session_state`; unavailable metadata cannot crash
+the player.
+
+### 2.3 Multi-tab/device behavior
+
+Serialize this browser's mutations; refresh every 15 seconds and on visible
+focus/online. Ignore older in-flight GET results. Adopt a newer REST snapshot by
+pausing local audio, restoring the state, and showing that another client changed
+playback. On 409, cancel pending stale actions, adopt the server snapshot, and
+allow a fresh user gesture against its revision. No queue union, no silent
+overwrite, no automatic retry. Two devices can listen at once; there is no
+exclusive device lease, immediate remote transport control, or synchronization.
 
 ## 3. The Synchronized Engine
 
@@ -254,6 +346,22 @@ Registration happens before any Navidrome lookup or stream open, so suspension e
 - Navidrome's event broker (`/api/events`, SSE, per-user, requires `DevActivityPanel`) is **not** used; Flow owns its own WS hub.
 
 ## 11. Testing Plan (engine)
+
+M3 executable evidence is in `internal/playback/*_test.go`,
+`internal/api/playback_test.go`, and `web/tests/player.test.mjs` /
+`api.test.mjs`. The 33 frontend tests cover restore/transport/queue, seek/pause,
+checkpoint capture and conflicts, pending-command end races, stale events,
+buffering/errors/autoplay, retry, account invalidation and cleanup.
+
+`TestIndividualPlaybackPostgres` exercises real conditional writes, account/
+session rechecks, migration/default-row behavior, a checkpoint/track race and
+new-pool restore. `TestM3LivePlayback` combines real auth, PostgreSQL, pinned
+Navidrome, the Flow gateway, compiled React UI/Chromium and a real Flow process
+restart. These live gates are conditional on disposable services and remain
+unexecuted locally in the restricted environment. The single-user SQL smoke is
+separate evidence, with no concurrency or browser claim. M3_REPORT records results.
+
+The following synchronized-engine plan belongs to M4 and is not M3 coverage:
 
 Unit (pure Go, fake clock):
 - Transition table (§4) as table-driven tests, including T3/T4/T5 timing and the restart safe-end (T6).

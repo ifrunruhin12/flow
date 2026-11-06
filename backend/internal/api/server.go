@@ -20,6 +20,7 @@ import (
 	"github.com/ifrunruhin12/flow/backend/internal/library"
 	"github.com/ifrunruhin12/flow/backend/internal/membership"
 	"github.com/ifrunruhin12/flow/backend/internal/navidrome"
+	"github.com/ifrunruhin12/flow/backend/internal/playback"
 	"github.com/ifrunruhin12/flow/backend/internal/playlist"
 	"github.com/ifrunruhin12/flow/backend/internal/streaming"
 )
@@ -73,10 +74,17 @@ type StreamingGateway interface {
 	OpenArtwork(context.Context, int64, string, navidrome.ArtworkOptions) (navidrome.BinaryResponse, error)
 }
 
-type M2Services struct {
+type PlaybackService interface {
+	Get(context.Context, auth.Principal) (playback.Session, error)
+	Update(context.Context, auth.Principal, playback.Mutation) (playback.Session, error)
+	Clear(context.Context, auth.Principal, *int64) (playback.Session, error)
+}
+
+type Services struct {
 	Library   LibraryService
 	Playlists PlaylistService
 	Streaming StreamingGateway
+	Playback  PlaybackService
 }
 
 type Server struct {
@@ -86,6 +94,7 @@ type Server struct {
 	library         LibraryService
 	playlists       PlaylistService
 	streaming       StreamingGateway
+	playback        PlaybackService
 	publicOrigin    string
 	cookieSecure    bool
 	sessionTTL      time.Duration
@@ -102,7 +111,7 @@ const (
 	correlationKey contextKey = "correlation"
 )
 
-func New(logger *slog.Logger, authService AuthService, membershipService MembershipService, publicOrigin string, cookieSecure bool, sessionTTL time.Duration, optional ...M2Services) *Server {
+func New(logger *slog.Logger, authService AuthService, membershipService MembershipService, publicOrigin string, cookieSecure bool, sessionTTL time.Duration, optional ...Services) *Server {
 	server := &Server{
 		logger:          logger,
 		auth:            authService,
@@ -118,6 +127,7 @@ func New(logger *slog.Logger, authService AuthService, membershipService Members
 		server.library = optional[0].Library
 		server.playlists = optional[0].Playlists
 		server.streaming = optional[0].Streaming
+		server.playback = optional[0].Playback
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/auth/login", server.login)
@@ -159,6 +169,11 @@ func New(logger *slog.Logger, authService AuthService, membershipService Members
 	if server.streaming != nil {
 		mux.HandleFunc("GET /audio/{mediaId}", server.audio)
 		mux.Handle("GET /audio/coverart/{id}", server.authenticated(http.HandlerFunc(server.artwork)))
+	}
+	if server.playback != nil {
+		mux.Handle("GET /api/playback/session", server.authenticated(http.HandlerFunc(server.getPlayback)))
+		mux.Handle("PUT /api/playback/session", server.originChecked(server.authenticated(http.HandlerFunc(server.updatePlayback))))
+		mux.Handle("DELETE /api/playback/session", server.originChecked(server.authenticated(http.HandlerFunc(server.clearPlayback))))
 	}
 	server.handler = server.correlated(mux)
 	return server

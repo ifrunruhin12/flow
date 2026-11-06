@@ -6,6 +6,8 @@ import type {
   ArtistDetail,
   MembershipRequest,
   Page,
+  PlaybackMutation,
+  PlaybackSession,
   Playlist,
   ScanStatus,
   SearchResult,
@@ -18,29 +20,32 @@ interface ErrorEnvelope {
     code?: string
     message?: string
   }
+  currentSession?: PlaybackSession
 }
 
 export class ApiError extends Error {
   readonly status: number
   readonly code: string
+  readonly currentSession?: PlaybackSession
 
-  constructor(status: number, code: string, message: string) {
+  constructor(status: number, code: string, message: string, currentSession?: PlaybackSession) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.code = code
+    this.currentSession = currentSession
   }
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-	const headers = new Headers(init?.headers)
-	if (init?.body !== undefined) {
-		headers.set('Content-Type', 'application/json')
-	}
+  const headers = new Headers(init?.headers)
+  if (init?.body !== undefined) {
+    headers.set('Content-Type', 'application/json')
+  }
   const response = await fetch(path, {
     ...init,
     credentials: 'include',
-		headers,
+    headers,
   })
   if (!response.ok) {
     let payload: ErrorEnvelope = {}
@@ -49,7 +54,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     } catch {
       // A generic error below is safer than exposing an untrusted response body.
     }
-    throw new ApiError(response.status, payload.error?.code ?? 'request_failed', payload.error?.message ?? 'The request failed.')
+    throw new ApiError(response.status, payload.error?.code ?? 'request_failed', payload.error?.message ?? 'The request failed.', payload.currentSession)
   }
   if (response.status === 204) {
     return undefined as T
@@ -178,6 +183,14 @@ export const updatePlaylist = (
 
 export const deletePlaylist = (id: string): Promise<void> =>
   request(`/api/playlists/${encodeURIComponent(id)}`, { method: 'DELETE' })
+
+export const getPlaybackSession = (): Promise<PlaybackSession> => request('/api/playback/session')
+
+export const updatePlaybackSession = (mutation: PlaybackMutation): Promise<PlaybackSession> =>
+  request('/api/playback/session', { method: 'PUT', body: JSON.stringify(mutation) })
+
+export const clearPlaybackSession = (ifRevision: number): Promise<PlaybackSession> =>
+  request('/api/playback/session', { method: 'DELETE', body: JSON.stringify({ ifRevision }) })
 
 export function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : 'The operation could not be completed.'

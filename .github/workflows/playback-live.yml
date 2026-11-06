@@ -1,0 +1,78 @@
+name: M3 live playback
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  playback:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: flow_m3_test
+          POSTGRES_USER: flow
+          POSTGRES_PASSWORD: flow-test-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U flow -d flow_m3_test"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+    env:
+      FLOW_TEST_DATABASE_URL: postgres://flow:flow-test-only@127.0.0.1:5432/flow_m3_test?sslmode=disable
+      FLOW_REAL_NAVIDROME_URL: http://127.0.0.1:4533
+      FLOW_REAL_NAVIDROME_ADMIN_USERNAME: flow-m3-navidrome-admin
+      FLOW_REAL_NAVIDROME_ADMIN_PASSWORD: flow-m3-navidrome-test-password
+      FLOW_REAL_NAVIDROME_ALLOW_MUTATION: "true"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: .go-version
+          cache-dependency-path: backend/go.sum
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Web checks and bundle
+        working-directory: web
+        run: |
+          npm ci --ignore-scripts
+          npm test
+          npm run typecheck
+          npm run lint
+          npm run build
+      - name: Playback fixtures and Chromium
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ./dev/create-audio-fixture.sh
+          sh dev/create-playback-fixture.sh
+          echo "FLOW_BROWSER_EXECUTABLE=$(command -v google-chrome)" >> "$GITHUB_ENV"
+          google-chrome --version
+      - name: Start pinned Navidrome
+        run: docker compose -p flow-m3-live -f deploy/docker-compose.dev.yml -f deploy/docker-compose.playback-test.yml up -d navidrome
+      - name: Wait for Navidrome
+        run: |
+          for attempt in $(seq 1 60); do
+            curl -fsS http://127.0.0.1:4533/ping && exit 0
+            sleep 1
+          done
+          exit 1
+      - name: Existing Navidrome contract gate
+        working-directory: backend
+        env:
+          FLOW_REAL_NAVIDROME_CREATE_ADMIN: "true"
+        run: go test -tags=integration -run '^TestPinnedNavidrome' -v ./integration
+      - name: PostgreSQL and M3 process/browser gate
+        working-directory: backend
+        run: |
+          go test -race ./...
+          go test -race -tags=integration -run '^TestM3LivePlayback$' -v ./integration
+      - name: Dispose test Navidrome volume
+        if: always()
+        run: docker compose -p flow-m3-live -f deploy/docker-compose.dev.yml -f deploy/docker-compose.playback-test.yml down -v

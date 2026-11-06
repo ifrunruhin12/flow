@@ -1,0 +1,6 @@
+# Test-only override: mount generated fixtures instead of the operator's library.
+# Compose resolves paths relative to docker-compose.dev.yml in this directory.
+services:
+  navidrome:
+    volumes:
+      - ../dev/music-root/library:/music:ro

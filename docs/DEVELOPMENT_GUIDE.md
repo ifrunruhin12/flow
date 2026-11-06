@@ -49,13 +49,13 @@ cd backend
 set -a; source ../deploy/.env.local; set +a
 go run ./cmd/flowd             # migrations, dependency probes, listen :8080
 
-# terminal 3: the M2 browser client
+# terminal 3: the M3 browser client
 cd ../web
 npm install
 npm run dev                    # http://127.0.0.1:5173; /api and /audio proxy to :8080
 ```
 
-`docker-compose.dev.yml` contains only PostgreSQL and Navidrome and binds them to loopback (`127.0.0.1:55432` by default and `127.0.0.1:4533`) because the backend runs on the host. `FLOW_DEV_POSTGRES_PORT` can change the PostgreSQL host port; its value must match the port in `FLOW_DATABASE_URL`. Navidrome mounts only `dev/music-root/library`; Flow later uses the sibling `.flow-staging` on the same filesystem. `create-audio-fixture.sh` creates one deterministic FLAC only when it is absent and never overwrites an existing file.
+`docker-compose.dev.yml` contains only PostgreSQL and Navidrome and binds them to loopback (`127.0.0.1:55432` by default and `127.0.0.1:4533`) because the backend runs on the host. `FLOW_DEV_POSTGRES_PORT` can change the PostgreSQL host port; its value must match the port in `FLOW_DATABASE_URL`. The current normal dev Navidrome mount is `/home/ruhin/Music:/music:ro`. Contract tests use `docker-compose.playback-test.yml` to mount only generated `dev/music-root/library` fixtures in a separate Compose project. The documented future upload topology uses the sibling `.flow-staging` on the same filesystem. `create-audio-fixture.sh` creates one deterministic FLAC only when it is absent and never overwrites an existing file.
 
 **Why the application processes run directly on the host (rather than duplicating the backend in Compose):**
 - One backend process ⇒ the single-writer sync executor, the active-stream registry, and the Navidrome JWT cache are unambiguously global. Running a second, containerized backend would create **two executors** for one Postgres `shared_sessions` row — the exact failure the single-instance design forbids (ADR-005). The dev workflow therefore never starts two backends.
@@ -89,9 +89,9 @@ Decision rule when adding a knob: "does an operator change it at deploy time (en
 ### 3.2 Web (TypeScript)
 
 - `strict: true`, no `any` (eslint rule; use `unknown` + narrowing).
-- Feature-folder layout (ARCHITECTURE §6). One barrel per feature; no cross-feature imports except via `app/` providers.
-- Server state: TanStack Query only; no hand-rolled fetch wrappers except the one in `lib/api.ts` (cookie-based `fetch`).
-- Audio: M2 owns one `<audio>` element in `features/library/PlayerBar.tsx`, pointing only at `/audio/…`. M3 may lift it into a player context when persistence arrives, but must keep one element. No Navidrome URL/credential is ever constructed on the client (ADR-001).
+- Feature-folder layout (ARCHITECTURE §6), one barrel per feature. The app composes providers; library pages consume the shared player hook through its barrel (ADR-007).
+- Library/auth server state uses TanStack Query. Playback uses one context/controller for CAS acknowledgements and local media transport. All fetches use `lib/api.ts` with Flow cookies.
+- Audio: `features/player/PlayerProvider.tsx` owns the account's single element. Navigation keeps it mounted. Replacement/retry/teardown cancel its source; progress renders locally and checkpoints are periodic. No Navidrome URL/credential is constructed on the client (ADR-001/007).
 - Theming: tokens in `themes/*.css` (custom properties); components reference tokens **only** (`var(--flow-accent)`), never raw hex in components.
 
 ## 4. Branching and Commits
@@ -116,10 +116,14 @@ The single-writer executor is the liveness heart of synchronized mode. Its lifec
 
 | Layer | What | Tools | Navidrome? |
 |---|---|---|---|
-| **Unit** (fast, always on PR) | pure logic: drift decision, transition table (T1–T6), path sanitization, session-token hashing, provisioning state machine | `go test` (fake clock), `vitest` | **none** |
+| **Unit** (fast, always on PR) | implemented auth/provisioning/library/streaming/playback logic and frontend controller/audio lifecycle | `go test`, TypeScript compiler + Node built-in `node:test` | **none** |
 | **Integration — fake Navidrome** (fast, always on PR) | the narrow adapter's request paths, authentication headers, JSON decoding, cancellation, redacted transport errors, and HTTP error mapping | deterministic injected `http.RoundTripper`; PostgreSQL integration uses a disposable real server supplied by CI or `FLOW_TEST_DATABASE_URL` | **fake** |
 | **Integration — real Navidrome** (manual/nightly/tag) | executable contract suite against release `0.64.2`: bootstrap/login, users/libraries, browse/search, member scope, playlists, stream Range/transcode/seek, scan, and config gates | pinned image when Docker is available; the suite requires an explicit disposable-instance mutation flag. A local binary built from the exact tag is a development fallback but does not establish the image digest | **real, pinned release** |
-| **E2E** (nightly) | real backend + real pinned Navidrome + Playwright web client; WS client simulated with a second Playwright page | Compose dev + Playwright | real |
+| **M3 live E2E** (PR/main/manual) | actual Flow executable, PostgreSQL 16, pinned Navidrome, compiled SPA, Chromium decoding/progress, two tabs/accounts and a process restart | `playback-live.yml`, test-only DevTools pipe client | real |
+
+M4 drift/state-machine/WebSocket/Playwright checks remain future milestone work.
+M3's test-only browser driver adds no production dependency. Neither mocked audio
+nor a skipped live suite is evidence that browser playback works.
 
 Rules:
 
@@ -164,7 +168,7 @@ Both PostgreSQL tests create and remove isolated schemas inside the disposable d
 
 ```bash
 ./dev/create-audio-fixture.sh
-docker compose --env-file deploy/.env.local -p flow-m0-contract -f deploy/docker-compose.dev.yml up -d navidrome
+docker compose --env-file deploy/.env.local -p flow-m0-contract -f deploy/docker-compose.dev.yml -f deploy/docker-compose.playback-test.yml up -d navidrome
 until curl -fsS http://127.0.0.1:4533/ping >/dev/null; do sleep 1; done
 
 cd backend
@@ -178,7 +182,7 @@ FLOW_REAL_NAVIDROME_VERSION='0.64.2' \
 cd ..
 
 docker image inspect deluan/navidrome:0.64.2 --format '{{json .RepoDigests}}'
-docker compose --env-file deploy/.env.local -p flow-m0-contract -f deploy/docker-compose.dev.yml down -v
+docker compose --env-file deploy/.env.local -p flow-m0-contract -f deploy/docker-compose.dev.yml -f deploy/docker-compose.playback-test.yml down -v
 ```
 
 The output must match the digest pinned in Compose. A tag-only run does not establish a new release pin.
@@ -204,6 +208,74 @@ The fast backend suite includes a 32 MiB discard-writer stream test (bounded chu
 
 For a full local M2 smoke test, follow §2, sign in as both the administrator and one fully provisioned member, browse albums/artists/search/playlists, and stream the deterministic FLAC. In browser developer tools, the client request must target only `/audio/{mediaId}` or `/audio/coverart/{id}`; no request/response may contain the Navidrome host, username, password, or JWT.
 
+### 6.3 M3 checks and live playback
+
+Fast checks (repository root):
+
+```bash
+cd backend
+GOCACHE=/tmp/flow-go-cache go test -race -count=1 ./...
+GOCACHE=/tmp/flow-go-cache go vet ./...
+GOCACHE=/tmp/flow-go-cache go build ./cmd/flowd
+GOCACHE=/tmp/flow-go-cache go test -tags=integration -run '^$' ./integration
+cd ../web
+npm test
+npm run typecheck
+npm run lint
+npm run build
+```
+
+`npm test` compiles the production controller/media/API modules into a temporary
+directory and runs 33 Node tests. Cases include actual-position pause/seek, queue
+controls, bounded checkpoint calls, loading/buffering/errors, autoplay rejection,
+source retry/cancellation, natural end during a pending command, stale events,
+409/two-tab reconciliation, uncertain responses, restore and teardown. The browser
+gate separately tests rendered React controls, real decoding/progress and stable
+element identity during navigation.
+
+The backend service/API suite covers ownership, account gates, defaults, all queue
+and transport controls, validation, shuffle, stale writes, competing commands and
+checkpoints racing track/queue changes. `FLOW_TEST_DATABASE_URL` also enables the
+real pgx suite during `go test -race ./...`; without it, PostgreSQL tests skip.
+
+For a live gate, use §6.1's disposable database and a **separate disposable**
+Navidrome Compose project. Create both fixtures before starting Navidrome:
+
+```bash
+./dev/create-audio-fixture.sh
+sh dev/create-playback-fixture.sh
+docker compose -p flow-m3-live -f deploy/docker-compose.dev.yml -f deploy/docker-compose.playback-test.yml up -d navidrome
+# Wait for /ping. Build the web bundle with npm run build before the command below.
+cd backend
+FLOW_TEST_DATABASE_URL='postgres://flow:flow-dev-only@127.0.0.1:55432/flow_migration_test?sslmode=disable' \
+FLOW_REAL_NAVIDROME_URL='http://127.0.0.1:4533' \
+FLOW_REAL_NAVIDROME_ADMIN_USERNAME='flow-m3-navidrome-admin' \
+FLOW_REAL_NAVIDROME_ADMIN_PASSWORD='flow-m3-navidrome-test-password' \
+FLOW_REAL_NAVIDROME_CREATE_ADMIN='true' \
+FLOW_REAL_NAVIDROME_ALLOW_MUTATION='true' \
+FLOW_BROWSER_EXECUTABLE="$(command -v chromium)" \
+GOCACHE=/tmp/flow-go-cache \
+  go test -race -tags=integration -run '^TestM3LivePlayback$' -v ./integration
+cd ..
+docker compose -p flow-m3-live -f deploy/docker-compose.dev.yml -f deploy/docker-compose.playback-test.yml down -v
+```
+
+Use `google-chrome` for the executable where Chromium has that name. The live test
+builds/starts exactly one temporary Flow child, provisions test members through
+real auth/membership, tests library/range audio and CAS, runs the browser, stops
+Flow, starts a fresh process against the same schema/keyring, and checks restore.
+Its own static test server proxies API/audio to that child; the normal development
+backend is not required. Member/schema cleanup is scoped to the test fixtures.
+Omitting the browser executable explicitly skips that portion of the gate.
+
+The optional `python3 dev/test-playback-schema.py` smoke uses a new disposable
+single-user PostgreSQL process without listeners. It checks SQL upgrade/backfill,
+trigger/constraints, conditional stale rejection, restart and down/reapply. It
+does not exercise pgx, simultaneous transactions, Flow auth, Navidrome or audio.
+
+Latest local evidence and unexecuted gates are recorded in M3_REPORT. The sandbox
+denies Docker/TCP/Unix sockets and Chromium startup; live gates are not complete.
+
 ## 7. Migrations: Testing and Production Policy (task 4)
 
 - **Layout:** embedded `backend/migrations/NNNN_name.up.sql` + `.down.sql`. M0 creates migration infrastructure and only schema needed by M0; later milestones add their own tables rather than creating future feature schema early.
@@ -218,7 +290,8 @@ For a full local M2 smoke test, follow §2, sign in as both the administrator an
 |---|---|---|
 | `backend.yml` | PR, main | `go vet`, unit/fake-adapter tests, build, migration tests when PostgreSQL service is available |
 | `navidrome-pinned.yml` | nightly, tag, manual | full real-contract suite against the pinned Navidrome release/image |
-| `web.yml` | after the web milestone | `tsc --noEmit`, eslint, build |
+| `web.yml` | PR/main | `npm test`, typecheck, eslint, build |
+| `playback-live.yml` | PR/main/manual | existing pinned-Navidrome contracts + PostgreSQL CAS + M3 Chromium/Flow process restart |
 | `e2e.yml` | main (post-merge), nightly | Compose dev + Playwright: login → browse → stream (real audio bytes asserted) → sync session with 2 automated clients (real pinned Navidrome) |
 | `release.yml` | tag `v*` | build multi-arch backend image (pinned Go) + web bundle, push to registry, `trivy` scan, update `deploy/` docs |
 

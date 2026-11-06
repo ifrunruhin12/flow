@@ -72,12 +72,23 @@ M2 implementation constraints: registration precedes every Navidrome lookup/open
 
 | ID | Requirement | Priority |
 |---|---|---|
-| FR-IND-001 | Every user has an isolated playback session: queue, position, volume, shuffle. | V1 must-have |
+| FR-IND-001 | Every user has one isolated playback session: canonical queue of media-ID occurrences, index/current ID, position, volume, shuffle, transport intent, revision, and updated timestamp. No duplicated Navidrome metadata. | V1 must-have |
 | FR-IND-002 | Playback state is persisted (Postgres) and restored on new session/device (resume where left off). | V1 must-have |
-| FR-IND-003 | Controls: play/pause, next/prev, seek (client-side), queue add/remove, volume. | V1 must-have |
+| FR-IND-003 | One global browser player provides play/pause, next/previous, seek, queue add/remove/reorder/select, volume and shuffle through the documented CAS API. It survives normal application navigation. | V1 must-have |
 | FR-IND-004 | Sessions are independent: no API or event lets one user affect another's session. | V1 must-have (constraint) |
 | FR-IND-005 | **One persisted individual session per user** shared across all that user's devices, with **optimistic concurrency (revision CAS)**: a stale write is rejected with 409 + the current session. V1 performs no automatic queue union or last-writer-wins merge; the client must reload or deliberately resubmit a replacement against the new revision. | V1 must-have |
-| FR-IND-006 | Queue, current-track/index, seek, pause, track-end, shuffle, and volume changes are persisted immediately. While actively playing, position checkpoints may be client-throttled to at most one accepted write per 10 seconds. Browser unload/page-hide is best-effort only and is never the sole durability mechanism. | V1 must-have |
+| FR-IND-006 | Intentional controls, queue/current selection, seek, pause, natural end, shuffle and volume commit immediately through CAS. Active media position is checkpointed every 10 seconds; progress events never write. Checkpoints retain sampled revision/track/index and are discarded after a conflict. No unload persistence handler. Crash durability is the last acknowledged checkpoint; background throttling/offline periods can extend the foreground loss window. | V1 must-have |
+
+M3 defaults, queue edges, stable shuffle, resume (no age cutoff; reset at known
+duration), local-versus-saved transport, unavailable media, and 409 behavior are
+normative in API §4 / PLAYBACK_SYSTEM §2 / ADR-007.
+
+M3 implementation and acceptance evidence are recorded in `M3_REPORT.md`.
+Backend service/API tests and frontend controller tests cover FR-IND-001…006.
+The SQL smoke checks migration/default-row/constraint/restart behavior separately.
+Live PostgreSQL CAS and actual browser/gateway/Navidrome/process-restart gates
+remain pending in the restricted implementation environment; these requirements
+are not marked fully complete on the strength of deterministic tests alone.
 
 ### 1.7 Synchronized Playback
 

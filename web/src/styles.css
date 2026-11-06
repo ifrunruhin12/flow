@@ -182,6 +182,25 @@ button:disabled {
   color: var(--flow-warning);
 }
 
+.queue-panel {
+  position: fixed;
+  z-index: 40;
+  right: max(1rem, calc((100vw - 78rem) / 2));
+  bottom: 12rem;
+  width: min(36rem, calc(100vw - 2rem));
+  max-height: min(32rem, calc(100dvh - 16rem));
+  overflow-y: auto;
+  padding: 1.25rem;
+  background: var(--flow-surface);
+}
+
+.queue-current {
+  background: color-mix(in srgb, var(--flow-accent) 12%, transparent);
+  border-radius: 0.6rem;
+  padding-right: 0.5rem;
+  padding-left: 0.5rem;
+}
+
 @media (max-width: 640px) {
   .player-bar {
     right: 0.5rem;
@@ -192,5 +211,12 @@ button:disabled {
   .artwork-large {
     width: 6.5rem;
     height: 6.5rem;
+  }
+
+  .queue-panel {
+    bottom: 17rem;
+    right: 0.5rem;
+    width: calc(100vw - 1rem);
+    max-height: calc(100dvh - 20rem);
   }
 }

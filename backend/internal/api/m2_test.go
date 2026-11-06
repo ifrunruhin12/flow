@@ -378,7 +378,7 @@ func TestAudioProxyConcurrentStreamsRemainIncremental(t *testing.T) {
 
 func m2Server(authService *fakeAuth, libraryService LibraryService, playlistService PlaylistService, gateway StreamingGateway) *Server {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	return New(logger, authService, &fakeMembership{}, "http://127.0.0.1:5173", false, time.Hour, M2Services{
+	return New(logger, authService, &fakeMembership{}, "http://127.0.0.1:5173", false, time.Hour, Services{
 		Library: libraryService, Playlists: playlistService, Streaming: gateway,
 	})
 }

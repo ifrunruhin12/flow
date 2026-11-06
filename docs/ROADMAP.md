@@ -62,10 +62,20 @@ Implementation status (2026-11-05): M1 readiness was audited and the M2 backend/
 | **Multi-device concurrency: one session per user, revision CAS, 409 + reconcile** | FR-IND-005 (task F) |
 | Queue management UI (add, remove, reorder, shuffle) | FR-IND-003 |
 | Resume-on-login from the last durably checkpointed queue, track, and position | FR-IND-002 |
+| Command persistence, 10-second active checkpoints, guarded natural end, and source retry | FR-IND-006, ADR-007 |
+| Global browser player, optional Media Session, library/listing integration | FR-IND-003, ADR-007 |
+| REST refresh, 409 reconciliation, actual browser decoding and restart gate | FR-IND-004…005, NFR-REL-001 |
 
 Exit: **close browser, reopen next day on another device — queue and position restored; two devices on one account reconcile without losing state (409 path verified).**
 
-## M4A — Synchronization State Machine, Executor, Persistence, Event Protocol
+Implementation is present, with deterministic service/API/frontend coverage and
+an executed SQL smoke. The real pgx/PostgreSQL 16 and browser/Navidrome/Flow process
+restart completion gates remain pending because the implementation environment
+denies Docker/socket access. CI now has an executable `playback-live.yml` gate;
+no CI pass is claimed before it runs. See M3_READINESS and M3_REPORT. M3 is not
+marked complete while those gates are outstanding. No M4 implementation started.
+
+## M4A — Synchronization State Machine and Backend Executor
 
 | Task | IDs / refs |
 |---|---|

@@ -22,6 +22,7 @@ import (
 	"github.com/ifrunruhin12/flow/backend/internal/library"
 	"github.com/ifrunruhin12/flow/backend/internal/membership"
 	"github.com/ifrunruhin12/flow/backend/internal/navidrome"
+	"github.com/ifrunruhin12/flow/backend/internal/playback"
 	"github.com/ifrunruhin12/flow/backend/internal/playlist"
 	"github.com/ifrunruhin12/flow/backend/internal/streaming"
 	"github.com/ifrunruhin12/flow/backend/migrations"
@@ -121,8 +122,10 @@ func run() error {
 	libraryService := library.New(navidromeAdapter)
 	playlistService := playlist.New(navidromeAdapter)
 	streamingGateway := streaming.NewGateway(authService, streamRegistry, navidromeAdapter)
-	apiServer := api.New(logger, authService, membershipService, cfg.PublicOrigin, cfg.CookieSecure, cfg.SessionTTL, api.M2Services{
+	playbackService := playback.New(playback.NewPostgresStore(pool), libraryService)
+	apiServer := api.New(logger, authService, membershipService, cfg.PublicOrigin, cfg.CookieSecure, cfg.SessionTTL, api.Services{
 		Library: libraryService, Playlists: playlistService, Streaming: streamingGateway,
+		Playback: playbackService,
 	})
 
 	application := httpserver.New(logger, pool, navidromeClient, integration, apiServer.Handler())

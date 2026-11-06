@@ -61,7 +61,11 @@ Each authenticated user has an independent playback session. Sessions are isolat
 - User can start or stop their session at any time
 
 State to persist per user (Postgres):
-- Current track ID, position (seconds), queue (ordered track IDs), volume, shuffle state
+- Current track ID, position (milliseconds), canonical queue (media IDs and added
+  timestamps), current index, volume, shuffle, transport intent, revision, and
+  updated timestamp. Resume has no age cutoff and never auto-plays without a
+  gesture. Individual controls/checkpoints use the CAS contract in PLAYBACK_SYSTEM
+  §2 and API §4; no automatic multi-device queue merge.
 
 ### 3.2 Synchronized Mode
 

@@ -9,6 +9,10 @@ const typeCheckedFiles = ['**/*.{ts,tsx}']
 export default tseslint.config(
   { ignores: ['dist'] },
   eslint.configs.recommended,
+  {
+    files: ['tests/**/*.mjs'],
+    languageOptions: { globals: { ...globals.node, ...globals.browser } },
+  },
   ...tseslint.configs.recommendedTypeChecked.map((config) => ({
     ...config,
     files: typeCheckedFiles,

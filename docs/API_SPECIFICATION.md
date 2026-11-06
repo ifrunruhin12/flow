@@ -109,11 +109,89 @@ Playlist detail is `{id,name,comment?,songCount,durationMs,coverUrl?,tracks:[son
 | Method | Path | Body | Notes |
 |---|---|---|---|
 | GET | `/playback/session` | – | `{queue, queueIndex, currentMediaId, positionMs, volume, shuffle, revision}` |
-| PUT | `/playback/session` | `{queue?, queueIndex?, currentMediaId?, positionMs?, volume?, shuffle?, ifRevision:<n>}` | CAS update. Mismatch ⇒ `409 conflict {currentRevision, currentSession}`. V1 does not merge automatically; the client reloads or deliberately resubmits replacement state against `currentRevision`. |
-| DELETE | `/playback/session` | – | Clears queue (e.g., "close player"); `ifRevision` required |
+| PUT | `/playback/session` | `{queue?, queueIndex?, currentMediaId?, positionMs?, volume?, shuffle?, status?, queueEdit?, command?, ifRevision:<n>}` | Atomic CAS; returns the complete session at the new revision. |
+| DELETE | `/playback/session` | `{ifRevision:<n>}` | CAS clears queue/current/position and pauses; retains volume/shuffle, row, and monotonic revision. Returns the complete session. |
 
-- Multiple devices share one persisted row. Every accepted request commits immediately and increments the revision. Clients may limit ordinary playing-position requests to one per 10 seconds, but queue/track/index, seek, pause, track-end, shuffle, and volume changes are sent immediately. Page-hide/unload is best-effort only.
-- No cross-user reads are possible (routes resolve the session from the authenticated user only).
+### 4.1 Session and mutations (M3, ADR-007)
+
+All paths above are relative to `/api`. GET also retrieves the queue; separate
+control routes are unnecessary. Responses add `status:"paused"|"playing"` and
+`updatedAt` (RFC3339 UTC) to the baseline shape. `status` is saved transport
+intent, not proof that a browser is producing audio. Default: `queue:[]`,
+`queueIndex:0`, `currentMediaId:null`, `positionMs:0`, `volume:1`, `shuffle:false`,
+`status:"paused"`, `revision:0`. The session is created with the Flow account.
+
+`queue` is a canonical ordered array of `{mediaId, addedAt}`. Replacement requests
+may omit `addedAt` for new occurrences; the server stamps new entries and
+preserves timestamps only for matching existing occurrences. At most 200 queue
+entries. Duplicate media IDs are allowed as distinct occurrences. Unknown body
+fields, owner IDs, query keys, missing/null/negative revisions, nonintegral
+indices/positions, and invalid values return `400 invalid_request`. `ifRevision`
+is a JSON safe integer. No route accepts a target user ID.
+
+Examples using the **same PUT endpoint**, all with `ifRevision`:
+
+| Interaction | Additional fields |
+|---|---|
+| Start album/listing | `queue:[{mediaId},…], queueIndex:<selected>, positionMs:0, status:"playing"` |
+| Select queued track | `queueIndex:<index>, positionMs:0, status:"playing"` |
+| Play / pause | `status:"playing"` / `status:"paused"`, plus sampled `positionMs` |
+| Seek | `positionMs:<target>, currentMediaId:<sampled>, queueIndex:<sampled>` |
+| Volume / shuffle | `volume:<0…1>` / `shuffle:<boolean>` |
+| Add items | `queueEdit:{add:[mediaId,…]}` |
+| Remove occurrences | `queueEdit:{remove:[indices…]}` |
+| Reorder | `queueEdit:{move:{from,to}}` (destination is the final canonical index) |
+| Next / previous | `command:"next"` / `command:"previous"`, optional sampled `positionMs` |
+| Natural end | `command:"ended", currentMediaId:<sampled>, queueIndex:<sampled>, positionMs:<sampled>` |
+| Periodic checkpoint | `command:"checkpoint", currentMediaId:<sampled>, queueIndex:<sampled>, positionMs:<sampled>` |
+
+`queueEdit` contains exactly one nonempty operation and cannot accompany full
+queue/selection fields or `command`. `command` cannot accompany queue edits,
+replacement, status, shuffle, or volume. End/checkpoint require all three sampled
+identity/position fields. Next/previous may include position but cannot select a
+different track. Position is bounded to 0…86,400,000 ms and the server's known
+Navidrome duration (1-second tolerance for rounded metadata); unknown duration
+uses the absolute bound. Volume is rounded to the schema's 0.001 precision.
+New/replacement items and selections use this user's library access; missing
+media ⇒ `404 not_found`, denied media ⇒ `403 forbidden`, upstream outage ⇒ 503.
+Retained missing items are not silently dropped and can still be removed/moved.
+Removal can select a retained unavailable successor/predecessor; that does not
+block deleting the requested occurrence. The browser surfaces the unavailable
+destination and persists paused intent. Explicit selection remains validated.
+Pause of the unchanged retained occurrence accepts a bounded checkpoint when
+metadata is missing/denied/temporarily unavailable; when available, authoritative
+duration validation still applies. Library failure cannot prevent stopping audio.
+
+### 4.2 Concurrency and persistence
+
+Every accepted write commits immediately and advances revision, including clear
+and harmless boundary commands. Stale revision or mismatched sampled checkpoint/
+end identity ⇒ HTTP 409:
+
+```json
+{"error":{"code":"conflict","message":"Playback changed. Reload the current session."},"currentRevision":8,"currentSession":{"queue":[],"queueIndex":0,"currentMediaId":null,"positionMs":0,"volume":1,"shuffle":false,"status":"paused","revision":8,"updatedAt":"2026-11-06T00:00:00Z"}}
+```
+
+The client adopts `currentSession`, pauses local transport, and shows the
+conflict. It never merges or retries a stale checkpoint/action automatically.
+An explicit subsequent user action uses the reconciled revision. Account/session
+authorization is checked again in the commit transaction. All reads/writes use
+the authenticated principal, including for the administrator's own session.
+Natural-end dispatch waits for earlier local commands and verifies the captured
+occurrence before sampling its current revision/index. This does not retry a
+rejected write. Periodic checkpoints always retain their original sampled guards.
+
+Ordinary playing-position checkpoints occur every 10 seconds; pause, seek,
+transition/end, and other commands persist immediately. Browser unload is not
+used. GET refresh occurs every 15 seconds and on focus/visibility/online. Queue
+boundaries, stable shuffle traversal, unavailable tracks, and resume behavior are
+defined in PLAYBACK_SYSTEM §2. Multiple devices may produce independent audio;
+M3 coordinates durable state only, with no remote playback/event protocol.
+
+M3 service/REST/controller coverage and the unexecuted live completion gates are
+recorded in M3_REPORT. `TestM3LivePlayback` is the executable real auth/PostgreSQL/
+Navidrome/gateway/Chromium/process-restart check; compilation or skipping does not
+establish that contract at runtime.
 
 ## 5. Synchronized Mode (shared session)
 

@@ -18,16 +18,17 @@ import {
   updatePlaylist,
 } from '../../lib/api'
 import type { Album, Artist, Playlist, Song } from '../../lib/types'
+import { usePlayer } from '../player'
 
 type Section = 'albums' | 'artists' | 'songs' | 'search' | 'playlists'
 
 export function LibraryExperience({
   isAdmin,
-  onPlay,
 }: {
   isAdmin: boolean
-  onPlay: (songs: Song[], index: number) => void
 }) {
+  const { controller } = usePlayer()
+  const onPlay = (songs: Song[], index: number) => { void controller.startQueue(songs, index) }
   const [section, setSection] = useState<Section>('albums')
   const scan = useQuery({ queryKey: ['library', 'scan'], queryFn: getScanStatus, refetchInterval: 30_000 })
 
@@ -55,6 +56,7 @@ export function LibraryExperience({
 }
 
 function AlbumsView({ onPlay }: { onPlay: (songs: Song[], index: number) => void }) {
+  const { pending, loading } = usePlayer()
   const [selected, setSelected] = useState('')
   const albums = useInfiniteQuery({
     queryKey: ['library', 'albums'],
@@ -65,7 +67,7 @@ function AlbumsView({ onPlay }: { onPlay: (songs: Song[], index: number) => void
   const items = albums.data?.pages.flatMap((page) => page.items) ?? []
   const detail = useQuery({ queryKey: ['library', 'album', selected], queryFn: () => getAlbum(selected), enabled: selected !== '' })
   return (
-    <LibraryPanel title="Albums" detail="Browse the Navidrome index without duplicating it in Flow." error={albums.error}>
+    <LibraryPanel title="Albums" detail="Choose an album and make time for the music." error={albums.error}>
       {selected !== '' && (
         <DetailPanel onClose={() => setSelected('')}>
           {detail.isPending && <Loading />}
@@ -79,7 +81,7 @@ function AlbumsView({ onPlay }: { onPlay: (songs: Song[], index: number) => void
                   <h3 className="mt-2 text-3xl font-black">{detail.data.title || 'Untitled album'}</h3>
                   <p className="mt-2 text-[var(--flow-muted)]">{detail.data.albumArtist || detail.data.artist || 'Unknown artist'}</p>
                   <div className="mt-4 flex gap-2">
-                    <button className="button-primary" disabled={detail.data.tracks.length === 0} onClick={() => onPlay(detail.data.tracks, 0)}>Play album</button>
+                    <button className="button-primary" disabled={pending || loading || detail.data.tracks.length === 0} onClick={() => onPlay(detail.data.tracks, 0)}>Play album</button>
                     <StarButton id={detail.data.id} kind="album" starred={detail.data.starred} />
                   </div>
                 </div>
@@ -99,6 +101,7 @@ function AlbumsView({ onPlay }: { onPlay: (songs: Song[], index: number) => void
 
 function ArtistsView({ onPlay }: { onPlay: (songs: Song[], index: number) => void }) {
   const [selected, setSelected] = useState('')
+  const [selectedAlbum, setSelectedAlbum] = useState('')
   const artists = useInfiniteQuery({
     queryKey: ['library', 'artists'],
     initialPageParam: '',
@@ -121,11 +124,12 @@ function ArtistsView({ onPlay }: { onPlay: (songs: Song[], index: number) => voi
               </div>
               {detail.data.topTracks.length > 0 && <><h4 className="mb-3 text-lg font-black">Top tracks</h4><SongList songs={detail.data.topTracks} onPlay={onPlay} /></>}
               <h4 className="mb-3 mt-7 text-lg font-black">Discography</h4>
-              <div className="album-grid">{detail.data.albums.map((album) => <AlbumCard key={album.id} album={album} />)}</div>
+              <div className="album-grid">{detail.data.albums.map((album) => <AlbumCard key={album.id} album={album} onOpen={() => setSelectedAlbum(album.id)} />)}</div>
             </>
           )}
         </DetailPanel>
       )}
+      {selectedAlbum !== '' && <AlbumPlaybackDetails id={selectedAlbum} onClose={() => setSelectedAlbum('')} onPlay={onPlay} />}
       <div className="album-grid">
         {items.map((artist) => <ArtistCard key={artist.id} artist={artist} onOpen={() => setSelected(artist.id)} />)}
       </div>
@@ -143,8 +147,8 @@ function SongsView({ onPlay }: { onPlay: (songs: Song[], index: number) => void 
   })
   const items = songs.data?.pages.flatMap((page) => page.items) ?? []
   return (
-    <LibraryPanel title="Songs" detail="A flat view of tracks available to this Navidrome identity." error={songs.error}>
-      <SongList songs={items} onPlay={onPlay} />
+    <LibraryPanel title="Songs" detail="Find a track, press play, or add it to your queue." error={songs.error}>
+      <SongList songs={items} onPlay={(songs, index) => { const song = songs[index]; if (song !== undefined) onPlay([song], 0) }} />
       <CollectionFooter empty={items.length === 0} pending={songs.isPending} error={songs.error} hasMore={songs.hasNextPage} loadingMore={songs.isFetchingNextPage} loadMore={() => void songs.fetchNextPage()} />
     </LibraryPanel>
   )
@@ -153,6 +157,8 @@ function SongsView({ onPlay }: { onPlay: (songs: Song[], index: number) => void 
 function SearchView({ onPlay }: { onPlay: (songs: Song[], index: number) => void }) {
   const [input, setInput] = useState('')
   const [query, setQuery] = useState('')
+  const [selectedAlbum, setSelectedAlbum] = useState('')
+  const [selectedArtist, setSelectedArtist] = useState('')
   const search = useQuery({ queryKey: ['library', 'search', query], queryFn: () => searchLibrary(query), enabled: query !== '' })
   const submit = (event: FormEvent) => {
     event.preventDefault()
@@ -167,11 +173,13 @@ function SearchView({ onPlay }: { onPlay: (songs: Song[], index: number) => void
       {search.isPending && query !== '' && <Loading />}
       {search.data !== undefined && (
         <div className="space-y-8">
-          <SearchGroup title="Songs" empty={search.data.songs.length === 0}><SongList songs={search.data.songs} onPlay={onPlay} /></SearchGroup>
-          <SearchGroup title="Albums" empty={search.data.albums.length === 0}><div className="album-grid">{search.data.albums.map((album) => <AlbumCard key={album.id} album={album} />)}</div></SearchGroup>
-          <SearchGroup title="Artists" empty={search.data.artists.length === 0}><div className="album-grid">{search.data.artists.map((artist) => <ArtistCard key={artist.id} artist={artist} />)}</div></SearchGroup>
+          <SearchGroup title="Songs" empty={search.data.songs.length === 0}><SongList songs={search.data.songs} onPlay={(songs, index) => { const song = songs[index]; if (song !== undefined) onPlay([song], 0) }} /></SearchGroup>
+          <SearchGroup title="Albums" empty={search.data.albums.length === 0}><div className="album-grid">{search.data.albums.map((album) => <AlbumCard key={album.id} album={album} onOpen={() => setSelectedAlbum(album.id)} />)}</div></SearchGroup>
+          <SearchGroup title="Artists" empty={search.data.artists.length === 0}><div className="album-grid">{search.data.artists.map((artist) => <ArtistCard key={artist.id} artist={artist} onOpen={() => setSelectedArtist(artist.id)} />)}</div></SearchGroup>
         </div>
       )}
+      {selectedArtist !== '' && <ArtistPlaybackDetails id={selectedArtist} onClose={() => setSelectedArtist('')} onPlay={onPlay} />}
+      {selectedAlbum !== '' && <AlbumPlaybackDetails id={selectedAlbum} onClose={() => setSelectedAlbum('')} onPlay={onPlay} />}
       {query === '' && <EmptyText>Enter a title, album, or artist.</EmptyText>}
     </LibraryPanel>
   )
@@ -283,8 +291,43 @@ function PlaylistDetail({ item, pending, error, isAdmin, onClose, onPlay }: { it
 }
 
 function SongList({ songs, onPlay }: { songs: Song[]; onPlay: (songs: Song[], index: number) => void }) {
+  const { controller, session, pending, loading } = usePlayer()
   if (songs.length === 0) return <EmptyText>No tracks found.</EmptyText>
-  return <div className="divide-y divide-[var(--flow-border)]">{songs.map((song, index) => <div key={`${song.id}-${index}`} className="song-row"><button className="player-control player-control-primary" onClick={() => onPlay(songs, index)} aria-label={`Play ${song.title}`}>▶</button><span className="min-w-0 flex-1"><strong className="block truncate">{song.title || 'Untitled track'}</strong><span className="block truncate text-sm text-[var(--flow-muted)]">{[song.artist, song.album].filter(Boolean).join(' · ') || 'Unknown metadata'}</span></span><span className="text-xs text-[var(--flow-muted)]">{formatDuration(song.durationMs)}</span><StarButton id={song.id} kind="song" starred={song.starred} compact /></div>)}</div>
+  return <div className="divide-y divide-[var(--flow-border)]">{songs.map((song, index) => (
+    <div key={`${song.id}-${index}`} className="song-row">
+      <button className="player-control player-control-primary" disabled={pending || loading} onClick={() => onPlay(songs, index)} aria-label={`Play ${song.title}`}>▶</button>
+      <span className="min-w-0 flex-1"><strong className="block truncate">{song.title || 'Untitled track'}{session?.currentMediaId === song.id && <span className="ml-2 text-xs text-[var(--flow-accent-strong)]">Current</span>}</strong><span className="block truncate text-sm text-[var(--flow-muted)]">{[song.artist, song.album].filter(Boolean).join(' · ') || 'Unknown metadata'}</span></span>
+      <span className="text-xs text-[var(--flow-muted)]">{formatDuration(song.durationMs)}</span>
+      <button className="player-control" disabled={pending || loading} onClick={() => { void controller.add(song.id) }} aria-label={`Add ${song.title} to queue`}>+</button>
+      <StarButton id={song.id} kind="song" starred={song.starred} compact />
+    </div>
+  ))}</div>
+}
+
+function AlbumPlaybackDetails({ id, onClose, onPlay }: { id: string; onClose: () => void; onPlay: (songs: Song[], index: number) => void }) {
+  const { pending, loading } = usePlayer()
+  const album = useQuery({ queryKey: ['library', 'album', id], queryFn: () => getAlbum(id) })
+  return <DetailPanel onClose={onClose}>
+    {album.isPending && <Loading />}
+    {album.isError && <ErrorText error={album.error} />}
+    {album.data !== undefined && <>
+      <div className="mb-5 flex items-center gap-5"><Artwork src={album.data.coverUrl} alt="" size="large" /><div><h3 className="text-2xl font-black">{album.data.title}</h3><p className="mt-2 text-[var(--flow-muted)]">{album.data.artist}</p><button className="button-primary mt-3" disabled={pending || loading || album.data.tracks.length === 0} onClick={() => { if (album.data !== undefined) onPlay(album.data.tracks, 0) }}>Play album</button></div></div>
+      <SongList songs={album.data.tracks} onPlay={onPlay} />
+    </>}
+  </DetailPanel>
+}
+
+function ArtistPlaybackDetails({ id, onClose, onPlay }: { id: string; onClose: () => void; onPlay: (songs: Song[], index: number) => void }) {
+  const [albumId, setAlbumId] = useState('')
+  const artist = useQuery({ queryKey: ['library', 'artist', id], queryFn: () => getArtist(id) })
+  return <>
+    <DetailPanel onClose={onClose}>
+      {artist.isPending && <Loading />}
+      {artist.isError && <ErrorText error={artist.error} />}
+      {artist.data !== undefined && <><h3 className="mb-4 text-2xl font-black">{artist.data.name}</h3><SongList songs={artist.data.topTracks} onPlay={onPlay} /><div className="album-grid mt-6">{artist.data.albums.map((album) => <AlbumCard key={album.id} album={album} onOpen={() => setAlbumId(album.id)} />)}</div></>}
+    </DetailPanel>
+    {albumId !== '' && <AlbumPlaybackDetails id={albumId} onClose={() => setAlbumId('')} onPlay={onPlay} />}
+  </>
 }
 
 function AlbumCard({ album, onOpen }: { album: Album; onOpen?: () => void }) {

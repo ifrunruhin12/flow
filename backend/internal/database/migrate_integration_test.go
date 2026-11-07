@@ -68,10 +68,10 @@ func TestMigrationsAgainstPostgres(t *testing.T) {
 		}
 	}
 	var count int
-	if err := pool.QueryRow(ctx, "SELECT count(*) FROM schema_migrations WHERE version IN (1, 2, 3)").Scan(&count); err != nil {
+	if err := pool.QueryRow(ctx, "SELECT count(*) FROM schema_migrations WHERE version IN (1, 2, 3, 4)").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 3 {
+	if count != 4 {
 		t.Fatalf("migration row count = %d", count)
 	}
 	var m1Columns int

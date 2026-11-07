@@ -203,7 +203,7 @@ Flow sync (single-writer executor goroutine — the ONLY writer):
   1. validate state (409 on version mismatch, 410 if ended)
   2. mutate shared session (version++ only for content changes; event_seq++ once)
   3. Postgres checkpoint + one composite sync_events row in the same transaction
-  4. WS broadcast: envelope {seq, version, type, payload, ts}
+  4. M4B consumes the committed result and broadcasts envelope {seq, version, type, payload, ts}
 Member client (audio via /audio gateway, control via WS):
   - on event: adjust player (seek to target = refTs + offset; or pause)
   - every 5 s: WS heartbeat {positionMs (monotonic-derived), bufferMs}
@@ -232,12 +232,18 @@ Flow:
   - WS broadcast {session-ended}
   - members: restore individual sessions from PG
 DJ disconnect (sync active):
-  - WS DJ channel closes → sync.MarkDJDisconnected() (freeze + persisted 90 s grace deadline, ADR-005)
+  - future M4B WS DJ channel closes → trusted sync.DisconnectDJ() (freeze + persisted 90 s grace deadline, ADR-005)
   - WS broadcast {dj-disconnected, graceUntil}
 Backend restart (V1 — ADR-005):
   - active shared sessions end safely; platform returns to Individual Mode
   - individual sessions remain persisted and restorable
 ```
+
+M4A stops after the service/API/persistence boundary. `AcquireLease` accepts
+only a server-issued connection ID supplied by the future authenticated M4B
+hub; it is intentionally not a public REST route. `POST /api/platform/mode` is
+the sole public start/end transition. Mode, shared checkpoint, durable event,
+and `mode.changed` audit entry commit atomically.
 
 ## 6. Frontend Architecture
 

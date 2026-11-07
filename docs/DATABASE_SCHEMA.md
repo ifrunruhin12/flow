@@ -17,9 +17,9 @@ users ──1:N──> sessions (opaque tokens; hash-stored)
 users ──1:0..1──> membership_request (approved → user)
 users ──1:0..1──> user_settings (theme, stream format, download flag)
 users ──1:1────> session_state (individual playback, per user, 1 row, revisioned)
-users ──1:N────> sync_participation (per shared session)
+users ──1:N────> sync_participation (M4B per shared session)
 users ──1:N────> upload_operations (audit of the upload pipeline)
-shared_sessions ──1:N──> sync_participation
+shared_sessions ──1:N──> sync_participation (M4B)
 shared_sessions ──1:N──> sync_events (authoritative per-sequence events; bounded per session)
 users ──1:N────> audit_log
 settings ──1:1──> platform (singleton row)
@@ -153,29 +153,39 @@ evidence and does not substitute for the pinned PostgreSQL 16/pgx gate.
 | Column | Type | Notes |
 |---|---|---|
 | id | bigint PK | |
-| version | int NOT NULL | Bumped on every mutation of shared *content* (ADR-006: version = state content order) |
-| event_seq | bigint NOT NULL default 0 | **Monotonic per-session event counter (ADR-006): every emitted authoritative state event (including `dj-disconnected` and `session-ended`, which do *not* bump `version`) increments `event_seq`.** |
+| version | bigint NOT NULL default 0 | Bumped on every mutation of shared *content* (ADR-006: version = state content order) |
+| event_seq | bigint NOT NULL default 1 | Creation commits `session-started` at sequence 1; every later authoritative event increments it. |
 | state | text NOT NULL CHECK (state IN ('active','paused','ended')) | |
 | dj_user_id | bigint FK→users NOT NULL | The DJ (admin) |
 | dj_lease_generation | bigint NOT NULL default 0 | Monotonic generation issued only by the executor. Clients never choose it. |
 | dj_lease_token_hash | bytea NULL | SHA-256 of the current opaque DJ lease token. The raw token is delivered only to the active authenticated DJ connection and is never persisted. |
 | dj_connection_id | uuid NULL | Server-issued ID of the active DJ WebSocket connection. A takeover/reconnect rotates token + generation and fences the old connection. |
 | dj_connected | boolean NOT NULL default false | |
+| dj_disconnected_at | timestamptz NULL | Exact persisted disconnect/freeze instant; present together with the grace deadline. |
 | dj_grace_deadline | timestamptz NULL | Drives grace while the process is alive and remains useful for audit. Any backend restart ends the session immediately in V1. |
 | current_media_id | text NOT NULL | |
-| position_ms | int NOT NULL | Position at `ref_ts` |
+| position_ms | bigint NOT NULL CHECK (0…86400000) | Position at `ref_ts` |
 | ref_ts | timestamptz NOT NULL | Server wall-clock at last content mutation |
 | queue | jsonb NOT NULL | Media ids (ordered) |
 | queue_index | int NOT NULL | |
-| created_at / ended_at | timestamptz | |
-| end_reason | text NULL CHECK (IN ('admin','dj-disconnect','platform-restart','grace-expiry')) | |
+| created_at / updated_at | timestamptz NOT NULL | |
+| ended_at | timestamptz NULL | Present exactly when state is `ended` |
+| end_reason | text NULL CHECK (IN ('admin','platform-restart','grace-expiry')) | DJ disconnect is a paused lifecycle state, not a terminal reason. |
 
-Constraints: `CHECK (dj_grace_deadline IS NULL OR state IN ('paused'))`; `CHECK (state = 'ended' OR end_reason IS NULL)`.
-Index: (state) — restart recovery scans non-ended rows once.
+Constraints also tie queue index/current ID to the JSON queue, require a
+connection ID and 32-byte token hash whenever `dj_connected=true`, pair the
+disconnect/deadline timestamps, permit grace only while paused/disconnected,
+and require terminal timestamp/reason together.
+A partial unique index permits exactly one non-ended shared session. The state
+index supports restart recovery.
 
 **Restart policy (V1, ADR-005):** on backend boot, any row with `state IN ('active','paused')` is marked `ended` with `end_reason = 'platform-restart'` in the same recovery transaction that flips the platform mode to `individual` and records the terminal event. The DJ grace deadline is diagnostic only across a restart; V1 never waits or resumes. Individual sessions are untouched.
 
-### 2.7 `sync_participation`
+Migration `0004_m4a_synchronization` owns `settings`, `shared_sessions`, and
+`sync_events`. Its down migration drops only those three tables; migration tests
+verify M3 individual rows survive down/reapply.
+
+### 2.7 `sync_participation` (M4B, not created by M4A)
 
 | Column | Type | Notes |
 |---|---|---|
@@ -184,6 +194,9 @@ Index: (state) — restart recovery scans non-ended rows once.
 | joined_at | timestamptz | |
 | last_heartbeat_ts | timestamptz | Debug/audit |
 | last_position_ms | int | Last reported position (diagnostics) |
+
+M4A deliberately creates no participation/heartbeat table because it has no
+WebSocket subscriptions or member heartbeat lifecycle. M4B owns this schema.
 
 ### 2.8 `sync_events` (authoritative, bounded log — ADR-006)
 
@@ -205,13 +218,14 @@ Invariant (ADR-006): **exactly one row per `(shared_session_id, event_seq)`**, a
 |---|---|---|
 | id | int PK, CHECK (id = 1) | Singleton |
 | mode | text NOT NULL CHECK (IN ('individual','synchronized')) | |
-| default_theme | text NOT NULL | |
-| allow_downloads | boolean NOT NULL default false | Platform gate |
 | sync_drift_threshold_ms | int NOT NULL default 2000 CHECK (>0) | |
 | sync_heartbeat_interval_ms | int NOT NULL default 5000 CHECK (>=2000) | |
-| dj_grace_period_s | int NOT NULL default 90 CHECK (>0) | |
-| max_concurrent_streams_per_user | int NOT NULL default 100 CHECK (>0) | Hard per-user limit on simultaneously registered gateway streams; Navidrome's transcoding limit is separate deploy-time configuration. |
+| dj_grace_period_s | int NOT NULL default 90 CHECK (=90) | M4A contract is fixed at 90 seconds. |
 | updated_at | timestamptz | |
+
+M4A creates only the platform/synchronization settings it owns. Theme,
+download, and configurable stream-cap columns arrive with their owning M5
+settings feature rather than as inactive placeholders.
 
 Note what is **not** here: Navidrome behavior (transcoding quality, `maxConcurrentStreams` on the Navidrome side, download/sharing gates) — those live in Navidrome config, owned by the operator (ARCHITECTURE §8). Runtime vs. deploy-time settings have exactly one home each.
 

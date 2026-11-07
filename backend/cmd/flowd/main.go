@@ -25,6 +25,7 @@ import (
 	"github.com/ifrunruhin12/flow/backend/internal/playback"
 	"github.com/ifrunruhin12/flow/backend/internal/playlist"
 	"github.com/ifrunruhin12/flow/backend/internal/streaming"
+	flowsync "github.com/ifrunruhin12/flow/backend/internal/sync"
 	"github.com/ifrunruhin12/flow/backend/migrations"
 	"github.com/jackc/pgx/v5"
 )
@@ -123,9 +124,15 @@ func run() error {
 	playlistService := playlist.New(navidromeAdapter)
 	streamingGateway := streaming.NewGateway(authService, streamRegistry, navidromeAdapter)
 	playbackService := playback.New(playback.NewPostgresStore(pool), libraryService)
+	synchronizationService := flowsync.New(flowsync.NewPostgresStore(pool), libraryService, playbackService)
+	defer synchronizationService.Close()
+	if _, err := synchronizationService.Recover(rootContext); err != nil {
+		return fmt.Errorf("recover synchronized playback: %w", err)
+	}
+	playbackService.SetModeGate(synchronizationService)
 	apiServer := api.New(logger, authService, membershipService, cfg.PublicOrigin, cfg.CookieSecure, cfg.SessionTTL, api.Services{
 		Library: libraryService, Playlists: playlistService, Streaming: streamingGateway,
-		Playback: playbackService,
+		Playback: playbackService, Synchronization: synchronizationService,
 	})
 
 	application := httpserver.New(logger, pool, navidromeClient, integration, apiServer.Handler())
@@ -162,6 +169,9 @@ func run() error {
 		if err := httpServer.Shutdown(shutdownContext); err != nil {
 			_ = httpServer.Close()
 			return err
+		}
+		if _, err := synchronizationService.Recover(shutdownContext); err != nil {
+			return fmt.Errorf("end synchronized playback during shutdown: %w", err)
 		}
 		logger.Info("flow backend stopped cleanly")
 		return nil

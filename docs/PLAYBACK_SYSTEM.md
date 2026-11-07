@@ -144,6 +144,7 @@ type SharedSession struct {
     DJConnectionID string      // server-issued active WebSocket connection id
     DJLeaseTokenHash [32]byte  // raw opaque token is never persisted
     DJConnected    bool
+    DJDisconnectedAt time.Time // persisted freeze instant while in grace
     DJGraceDeadline time.Time  // persisted (timestamptz): DJDisconnect + settings.dj_grace_period_s
     CurrentMedia   string
     PositionMs     int64 // position measured at RefTs
@@ -167,7 +168,7 @@ Time model: "now" for the shared timeline = `PositionMs + (nowServer - RefTs)` w
 Every admin control action follows one path:
 
 ```
-admin client ──HTTP POST /sync/session/{action}──► Flow
+    admin client ──HTTP POST /api/sync/session/{action}──► Flow
     Flow (sync engine, single-goroutine executor — the ONLY writer):
       1. validate state (409 on version mismatch from the client's `ifVersion`, 410 if ended)
       2. mutate state; Version++ only if content changed; EventSeq++ once
@@ -246,7 +247,7 @@ The DJ is identified by **identity + one server-bound connection + a rotated lea
                   │              │                  │
                   └──────┬───────┘                  │
                          │ admin starts sync        │
-                         │ (POST /sync/session)      │
+                         │ (POST /api/platform/mode)│
                          ▼                          ▼
                   ┌──────────────┐   admin ends   ┌──────────────┐
                   │ synchronized │───────────────►│ individual   │
@@ -265,12 +266,19 @@ Transition table (single source of truth — implement as a table-driven test in
 
 | # | From | Trigger | To | Side effects |
 |---|---|---|---|---|
-| T1 | individual | admin `POST /sync/session` | synchronized (active) | session created (seed = arg or admin's individual current); one composite `session-started` event commits checkpoint v0/seq1 with mode + full state; members pause individual playback |
-| T2 | synchronized | admin `POST /sync/session/end` | individual | `session-ended {reason:admin}` (seq++), individual sessions restored from PG, session row `ended` |
+| T1 | individual | admin `POST /api/platform/mode {mode:"synchronized"}` | synchronized (active) | session created (seed = arg or admin's individual current); one composite `session-started` event commits checkpoint v0/seq1 with mode + full state; members pause individual playback in M4B |
+| T2 | synchronized | admin `POST /api/platform/mode {mode:"individual"}` with active lease/version | individual | `session-ended {reason:admin}` (seq++), individual sessions remain preserved in PG, session row `ended` |
 | T3 | synchronized | DJ WS close (or 3 missed lease heartbeats) | synchronized (DJ-grace, paused) | freeze; `dj-disconnected {graceUntil}` (seq++, version unchanged); `DJGraceDeadline` persisted; deadline timer started |
 | T4 | T3 | DJ reconnects ≤ grace and receives a new connection-bound lease | synchronized (paused until command) | old socket fenced; explicit `play` re-baselines (`RefTs=now`, `PositionMs`=member position) |
 | T5 | T3 | grace deadline passes | individual | forced `session-ended {reason:grace-expiry}`, same restoration behavior as T2 |
 | T6 | any | platform/backend restart | individual | **V1: shared sessions end safely** (§3.6); individual sessions persist |
+
+M4A implements T1–T6 persistence and trusted lease lifecycle calls. It does
+not register a public lease-acquisition endpoint: M4B must pass the
+authenticated server-issued WebSocket connection ID to `AcquireLease`, and
+must call `DisconnectDJ` for that exact fenced lease when the connection is
+lost. The persisted-deadline timer rechecks session ID and deadline before T5;
+startup recovery applies T6 instead of resuming a pre-restart lease.
 
 Client-side transition effects (all roles):
 

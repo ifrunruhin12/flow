@@ -64,6 +64,10 @@ type testLibrary struct {
 	before func(string)
 }
 
+type testModeGate struct{ mode string }
+
+func (g *testModeGate) Mode(context.Context) (string, error) { return g.mode, nil }
+
 func (l *testLibrary) Song(_ context.Context, id int64, media string) (library.Song, error) {
 	l.mu.Lock()
 	l.calls = append(l.calls, id)
@@ -84,6 +88,36 @@ func testService() (*Service, *testLibrary) {
 	s := New(&memoryStore{states: map[int64]Session{}}, l)
 	s.now = func() time.Time { return testNow }
 	return s, l
+}
+
+func TestSynchronizedModePreservesButGatesIndividualState(t *testing.T) {
+	service, _ := testService()
+	principal := testPrincipal(1)
+	state, err := service.Get(context.Background(), principal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err = service.Update(context.Background(), principal, Mutation{IfRevision: pointer(state.Revision), Volume: pointer(.4)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	gate := &testModeGate{mode: "synchronized"}
+	service.SetModeGate(gate)
+	if _, err := service.Update(context.Background(), principal, Mutation{IfRevision: pointer(state.Revision), Volume: pointer(.8)}); !errors.Is(err, ErrSynchronizedMode) {
+		t.Fatalf("synchronized update=%v", err)
+	}
+	if _, err := service.Clear(context.Background(), principal, pointer(state.Revision)); !errors.Is(err, ErrSynchronizedMode) {
+		t.Fatalf("synchronized clear=%v", err)
+	}
+	preserved, err := service.Get(context.Background(), principal)
+	if err != nil || preserved.Revision != state.Revision || preserved.Volume != .4 {
+		t.Fatalf("preserved=%+v err=%v", preserved, err)
+	}
+	gate.mode = "individual"
+	restored, err := service.Update(context.Background(), principal, Mutation{IfRevision: pointer(state.Revision), Volume: pointer(.8)})
+	if err != nil || restored.Volume != .8 || restored.Revision != state.Revision+1 {
+		t.Fatalf("restored=%+v err=%v", restored, err)
+	}
 }
 
 func update(t *testing.T, s *Service, state Session, m Mutation) Session {

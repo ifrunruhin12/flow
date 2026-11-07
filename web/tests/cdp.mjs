@@ -71,7 +71,11 @@ export class Browser {
       await exited
       clearTimeout(timer)
     }
-    rmSync(this.profile, { recursive: true, force: true })
+    // Chromium may let a short-lived child finish profile bookkeeping after
+    // the browser process exits. Node's recursive remover supports bounded
+    // retries for exactly this ENOTEMPTY/EBUSY race; cleanup must not turn a
+    // successful browser assertion run into a failed integration gate.
+    rmSync(this.profile, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 })
   }
 }
 

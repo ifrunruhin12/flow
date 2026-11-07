@@ -28,6 +28,7 @@ const (
 var (
 	ErrInvalidInput           = errors.New("invalid playback input")
 	ErrPasswordChangeRequired = errors.New("password change required")
+	ErrSynchronizedMode       = errors.New("individual playback is unavailable in synchronized mode")
 )
 
 type QueueItem struct {
@@ -112,6 +113,10 @@ type Store interface {
 	CompareAndSwap(context.Context, auth.Principal, int64, Session) (Session, error)
 }
 
+type modeAwareStore interface {
+	CompareAndSwapInMode(context.Context, auth.Principal, int64, Session, string) (Session, error)
+}
+
 type Library interface {
 	Song(context.Context, int64, string) (library.Song, error)
 }
@@ -119,11 +124,20 @@ type Library interface {
 type Service struct {
 	store   Store
 	library Library
-	now     func() time.Time
+	mode    interface {
+		Mode(context.Context) (string, error)
+	}
+	now func() time.Time
 }
 
 func New(store Store, media Library) *Service {
 	return &Service{store: store, library: media, now: time.Now}
+}
+
+func (s *Service) SetModeGate(mode interface {
+	Mode(context.Context) (string, error)
+}) {
+	s.mode = mode
 }
 
 func validPrincipal(principal auth.Principal) error {
@@ -154,6 +168,15 @@ func (s *Service) Clear(ctx context.Context, principal auth.Principal, revision 
 func (s *Service) Update(ctx context.Context, principal auth.Principal, mutation Mutation) (Session, error) {
 	if err := validPrincipal(principal); err != nil {
 		return Session{}, err
+	}
+	if s.mode != nil {
+		mode, err := s.mode.Mode(ctx)
+		if err != nil {
+			return Session{}, err
+		}
+		if mode != "individual" {
+			return Session{}, ErrSynchronizedMode
+		}
 	}
 	if err := validateMutation(mutation); err != nil {
 		return Session{}, err
@@ -224,6 +247,11 @@ func (s *Service) Update(ctx context.Context, principal auth.Principal, mutation
 	// The earlier read is used only to construct/validate the proposed state.
 	// This conditional database write is the authority; a competing commit wins
 	// even when it occurs during a slow member-scoped Navidrome lookup.
+	if s.mode != nil {
+		if store, ok := s.store.(modeAwareStore); ok {
+			return store.CompareAndSwapInMode(ctx, principal, *mutation.IfRevision, next, "individual")
+		}
+	}
 	return s.store.CompareAndSwap(ctx, principal, *mutation.IfRevision, next)
 }
 

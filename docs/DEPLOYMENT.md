@@ -217,7 +217,7 @@ Restore order: music root → PostgreSQL → separately protected matching keyri
 
 - Startup validates configuration, connects to PostgreSQL, acquires a dedicated PostgreSQL advisory lock, runs embedded migrations, releases the lock, then marks `/readyz` ready. A second process waits/fails on the lock rather than migrating concurrently.
 - SIGTERM stops accepting new requests, marks readiness false, cancels background work, drains HTTP connections within the configured shutdown timeout, and closes database/Navidrome clients.
-- A crash runs no graceful hooks. On the next boot, migrations remain ledgered/transactional and later sync milestones apply ADR-005 safe-end recovery.
+- A crash runs no graceful hooks. On the next boot, M4A recovery transactionally ends every non-ended shared session with `platform-restart`, records the terminal event/audit transition, restores Individual mode, and leaves individual `session_state` rows untouched. Normal SIGTERM performs the same safe-end after HTTP drain.
 
 ## 9. Multi-Host (out of scope, documented so it's not accidental)
 

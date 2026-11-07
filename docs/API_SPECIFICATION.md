@@ -199,28 +199,37 @@ Read endpoints (authenticated, both roles):
 
 | Method | Path | Response |
 |---|---|---|
-| GET | `/sync/state` | `{mode, session:{id, version, eventSeq, state, currentMediaId, positionMs, refTs, queue, queueIndex, djLeaseGeneration, djGraceDeadline?}, you:{joined, driftMs?, lastCorrection?}}` (503 if mode is `individual` with no active session) |
-| GET | `/sync/participants` (admin only) | `[{userId, username, joinedAt, lastHeartbeat, estimatedDriftMs}]` |
+| GET | `/sync/state` | M4A: `{mode, activeSharedSessionId, session:{id, version, eventSeq, state, currentMediaId, positionMs, refTs, queue, queueIndex, djConnected, djLeaseGeneration, djDisconnectedAt?, djGraceDeadline?, createdAt, updatedAt}}` (503 if mode is `individual`). M4B may add per-caller participation data additively. |
+| GET | `/sync/participants` (admin only) | **M4B; not registered by M4A.** `[{userId, username, joinedAt, lastHeartbeat, estimatedDriftMs}]` |
 
 Write endpoints (**admin only**; members get 403; in an active session, only the **DJ** (the admin who started it — V1 is single-admin anyway) may mutate):
 
-Except for initial session creation and lease acquisition, every DJ mutation must include `X-Flow-DJ-Generation`, `X-Flow-DJ-Connection`, and `X-Flow-DJ-Lease`, plus the current content `ifVersion` in its body. The executor validates authenticated user, session, server-issued generation, bound connection, constant-time token hash, and content version immediately before applying the command.
+Every public DJ control mutation below must include `X-Flow-DJ-Generation`,
+`X-Flow-DJ-Connection`, and `X-Flow-DJ-Lease`, plus the current content
+`ifVersion` in its body. Initial mode start is the only public write without a
+lease. The executor validates authenticated user, session, server-issued
+generation, bound connection, constant-time token hash, and content version
+immediately before applying the command.
 
 | Method | Path | Body | Effect (server-side, single-writer executor) |
 |---|---|---|---|
-| POST | `/sync/session` | `{seedMediaId?, seedPositionMs?}` | Create shared session (seeds from admin's individual state or explicit args) at `version=0,event_seq=1`; commit one composite `session-started` checkpoint/event, then broadcast. |
-| POST | `/sync/session/play` / `pause` | `{ifVersion}` | State mutation; `version++`, `event_seq++`; checkpoint; broadcast |
-| POST | `/sync/session/seek` | `{positionMs, ifVersion}` | Same; also emits immediate per-client seek corrections |
+| POST | `/sync/session/play` / `pause` | `{ifVersion}` | State mutation; `version++`, `event_seq++`; checkpoint + durable event. M4B broadcasts it. |
+| POST | `/sync/session/seek` | `{positionMs, ifVersion}` | Same durable mutation; M4B adds per-client correction delivery. |
 | POST | `/sync/session/next` / `prev` | `{ifVersion}` | Advance shared queue; position=0, new `refTs`; same |
 | POST | `/sync/session/queue` | `{add?:[mediaId], remove?:[indices], move?:{from,to}, ifVersion}` | Queue mutation; same |
-| POST | `/sync/session/end` | `{ifVersion}` | state=ended, `event_seq++`; broadcast one composite `session-ended` event that also sets mode=`individual`; individual sessions restored |
-| POST | `/sync/session/lease` | `{connectionId, takeover?:boolean}` | From an authenticated admin WebSocket connection. Server issues `{generation, leaseToken}` and binds it to that connection. Reconnect/takeover rotates both and fences the old socket. DJ control requests carry `X-Flow-DJ-Connection` + `X-Flow-DJ-Lease`; any mismatch is `409 stale-lease`. |
+
+Creation and ending use only `POST /platform/mode` (§6); M4A does not
+register competing `/sync/session` or `/sync/session/end` routes. Lease
+acquisition and disconnect are trusted `sync.Service` operations for the M4B
+hub because the server-issued connection identity must come from an
+authenticated WebSocket. There is deliberately no unrestricted public
+`/sync/session/lease` endpoint in M4A.
 
 Member heartbeats:
 
 | Method | Path | Body | Notes |
 |---|---|---|---|
-| POST | `/sync/heartbeat` | `{sharedSessionId, positionMs, bufferMs}` | 204 on in-tolerance; `409 {targetPositionMs, reason:"behind"|"ahead"}` when `|drift| > threshold` (client seeks); 410 if session ended. V1 ships the **WS `heartbeat` message as primary** (no HTTP keepalive chatter); this endpoint exists for native clients and diagnostics. |
+| POST | `/sync/heartbeat` | `{sharedSessionId, positionMs, bufferMs}` | **M4B; not registered by M4A.** 204 on in-tolerance; `409 {targetPositionMs, reason:"behind"|"ahead"}` when `|drift| > threshold`; 410 if ended. |
 
 ### 5.1 Event ordering and consistency (ADR-006)
 
@@ -238,7 +247,35 @@ Member heartbeats:
 | Method | Path | Body | Role |
 |---|---|---|---|
 | GET | `/platform/mode` | – | `{mode, activeSharedSessionId?}` (all roles) |
-| POST | `/platform/mode` | `{mode: "individual"\|"synchronized", seed?, ifVersion?}` | admin only. Implements PRODUCT_SPEC §3.3 transitions: on `synchronized` creates the session (seed defaults to the admin's individual current track/position); on `individual`, `ifVersion` is required and the same lease/version fencing as `/sync/session/end` applies. Session start/end events are the mode notifications; no duplicate authoritative mode event is emitted. |
+| POST | `/platform/mode` | `{mode: "individual"\|"synchronized", seed?, ifVersion?}` | admin only. On `synchronized`, creates the session (seed defaults to the admin's individual current track/position); on `individual`, `ifVersion` plus the active lease headers are required. Session start/end events are the mode notifications; no duplicate mode event is emitted. |
+
+`seed` is `{mediaId?, positionMs?}`. Starting does not accept `ifVersion`.
+When no media ID is supplied, the backend validates and then transactionally
+rechecks the administrator's individual revision; a concurrent individual
+write returns 409 and the caller reloads before starting.
+Ending does not accept `seed` and requires all three DJ lease headers plus
+`ifVersion`. A stale content version or stale lease returns
+`409 {error:{code,message},currentState:<latest snapshot>}` when the snapshot
+read succeeds; clients reconcile before issuing another command. Every
+successful mode transition also writes the existing append-only
+`mode.changed` audit record with the request correlation ID in the same
+transaction.
+
+### 6.1 M4A durable event rows
+
+`sync_events` stores the envelope fields separately from its concise JSON
+payload: `{sharedSessionId, eventSeq, version, type, payload, serverTs}`.
+
+| Type | Payload |
+|---|---|
+| `session-started` | `{mode:"synchronized", session:<full committed session>}` |
+| `state-changed` | `{action,state,currentMediaId,positionMs,refTs,queueIndex,queue?}`; `queue` appears for queue edits |
+| `dj-disconnected` | `{state:"paused",positionMs,refTs,disconnectedAt,graceUntil}` |
+| `dj-reconnected` | `{djConnected:true,djLeaseGeneration,state,positionMs,refTs}` |
+| `session-ended` | `{reason,mode:"individual"}` |
+
+M4B constructs WebSocket envelopes from these committed fields; M4A does not
+broadcast them.
 
 ## 7. Admin — Membership (durable provisioning, ADR-004)
 

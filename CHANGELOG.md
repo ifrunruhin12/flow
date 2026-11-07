@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — V1 architecture reconciliation and M0–M3 implementation
+## Unreleased — V1 architecture reconciliation and M0–M4A implementation
 
 ### Architecture and documentation
 
@@ -61,7 +61,18 @@
 - Added 10-second active checkpoints plus immediate intentional commands, REST refresh every 15 seconds/on visible focus or online, visible 409 reconciliation, no automatic stale retries/merges and no unload durability dependency.
 - Fixed natural end racing an earlier local command, stale audio-error events, failed-source retry, and actual-position failure checkpoints. A rejected stopped-intent callback preserves conflict reconciliation. Retained unavailable media remains removable and can be durably paused.
 - Added Node frontend/controller/API tests, real pgx CAS/lifecycle/restart tests, a listener-free SQL smoke, and an opt-in live test combining the real Flow executable, PostgreSQL, pinned Navidrome, gateway and Chromium with an actual Flow process restart.
-- Added `playback-live.yml` and frontend test CI. Updated the product/API/playback/schema/architecture/development/requirements/roadmap documents; M4A remains unimplemented.
+- Added `playback-live.yml` and frontend test CI. Updated the product/API/playback/schema/architecture/development/requirements/roadmap documents.
+
+### M4A implementation — synchronization state machine and backend executor
+
+- Added reversible migration `0004_m4a_synchronization` with the platform-mode singleton, one-open-shared-session constraints, connection-bound DJ lease fields, authoritative timing checkpoint, and bounded per-session durable event log.
+- Added the channel-fed single-writer synchronization service, legal transition validation, server-authoritative active/paused position calculation, queue commands, content-version CAS, and a separate monotonically increasing lifecycle event sequence.
+- Added rotated random DJ lease tokens stored only as SHA-256 hashes, connection/generation/token fencing, explicit takeover, idempotent disconnect freeze, persisted 90-second grace deadline, reconnect, retrying deadline enforcement, and stale-owner rejection.
+- Added atomic PostgreSQL checkpoint + event + mode transition + `mode.changed` audit transactions, commit-time opaque-session/account rechecks, and startup/graceful-shutdown safe-end recovery that preserves every individual `session_state` row.
+- Added canonical mode/state/control REST routes. `/api/platform/mode` is the only public start/end API; lease acquisition/disconnect stay trusted internal boundaries for M4B and no public caller-chosen connection lease route exists.
+- Gated individual playback writes during synchronized mode without deleting or modifying individual state.
+- Added deterministic state-machine, timing, authorization, lease, queue, recovery, executor-concurrency, API, origin, and mode-gate tests plus an opt-in real-PostgreSQL suite for cross-executor locking, rollback, event order, suspension races, restart recovery, and migration reapplication.
+- Fixed Chromium test-profile cleanup to retry transient `ENOTEMPTY` failures instead of masking the M3 live-gate result.
 
 ### Verification status
 
@@ -76,3 +87,4 @@
 - The extended real Navidrome `v0.64.2` M2 contract (including album/artist/song lists and details, raw Range, both transcodes, artwork, stars, and playlist member reads) was not executed in this environment: Docker socket access was denied and no Navidrome listener was available on `127.0.0.1:4533`. M2 remains pending that live completion-gate run; no pass is claimed.
 - M3 deterministic frontend tests, backend tests, integration compilation and SQL smoke have been executed. Current results and commands are in `docs/M3_REPORT.md`.
 - M3's live PostgreSQL/Chromium/Navidrome/process-restart gates remain outstanding because Docker/socket access and Chromium startup are restricted. SQL smoke and transport doubles are not claimed as a browser playback pass. M3 is not marked fully complete until the live gates pass.
+- M4A deterministic Go tests pass. The PostgreSQL synchronization suite compiles but was skipped because `FLOW_TEST_DATABASE_URL` was unset; Docker access was denied and no local PostgreSQL listener was available. M4B has not started.

@@ -106,6 +106,15 @@ are not marked fully complete on the strength of deterministic tests alone.
 | FR-SYN-010 | Member disconnect/rejoin: re-snapshot on reconnect. | V1 must-have |
 | FR-SYN-011 | **V1: active shared sessions end safely on a Flow backend restart** (individual sessions persist and remain restorable) (ADR-005). Auto-resume of a shared session across restart = V1.x. | V1: safe-end (V1.x: auto-resume) |
 
+M4A implementation evidence covers FR-SYN-001/002/008/009/011 and the backend
+portion of FR-MODE-001…003: one persisted session, admin-only commands,
+connection-bound lease fencing, 90-second persisted grace, atomic
+checkpoint/event writes, and safe-end recovery. FR-SYN-003/005/006/007/010
+remain M4B because they require WebSocket delivery, participation heartbeats,
+or client playback coordination. The PostgreSQL concurrency suite is present
+but must execute with `FLOW_TEST_DATABASE_URL` before those M4A requirements
+are marked fully integration-verified.
+
 ### 1.8 Platform Mode
 
 | ID | Requirement | Priority |

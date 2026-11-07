@@ -26,6 +26,9 @@ Date: 2026-11-07
 - M1 stores the Navidrome credential username separately from the Flow login username. This is required for the operator-linked admin, whose two configured usernames may differ; AEAD associated data binds to the Navidrome credential identity.
 - The single V1 Flow administrator password is operator-managed by `FLOW_ADMIN_PASSWORD`; changing the deployment secret and restarting rotates the hash and revokes admin sessions. Member passwords use the normal self-change/reset flow.
 - Hard deletion persists `navidrome_cleanup_state` on the user row so compensation is visible and retryable in M1 without depending on the deferred audit viewer. Cleanup reconciles uncertain remote creation with the durable credential before deleting.
+- M4A uses `POST /api/platform/mode` as the sole public mode-transition API. Lease acquisition/disconnect are trusted service boundaries for the future M4B hub; no public route accepts a caller-chosen connection ID to establish DJ authority.
+- M4A persists `settings`, `shared_sessions`, and `sync_events`; mode changes, checkpoints, authoritative events, and the existing append-only `mode.changed` audit record share the same transaction.
+- `sync_participation`, heartbeats, WebSocket subscribe/snapshot delivery, and synchronized browser transport are M4B work and are not M4A placeholders.
 
 ## Contradictions resolved
 
@@ -38,6 +41,7 @@ Date: 2026-11-07
 | DJ generation could be presented by multiple sockets. | Server issues generation/token and binds both to one connection; reconnect/takeover rotates and fences; every command validates all lease fields. | REQUIREMENTS, DATABASE_SCHEMA, API_SPECIFICATION, PLAYBACK_SYSTEM, ADR-005 |
 | Snapshot then subscribe could miss event N+1. | Register/buffer subscriber first, read/send committed snapshot, drain buffered events, then go live. | REQUIREMENTS, API_SPECIFICATION, PLAYBACK_SYSTEM, ADR-006 |
 | Event docs alternated between one event per version and one per sequence. | Exactly one authoritative composite event per executor command/transaction and `event_seq`; every event carries current `version`. Transient corrections do not consume sequence values. | ARCHITECTURE, DATABASE_SCHEMA, API_SPECIFICATION, PLAYBACK_SYSTEM, ADR-006 |
+| API docs exposed both `/sync/session` and `/platform/mode` for start/end, while lease acquisition depended on a WebSocket connection M4A does not create. | `/platform/mode` is canonical for start/end. DJ lease acquisition/disconnect remain authenticated, connection-bound service calls for M4B; M4A exposes only fenced playback commands and state reads. | API_SPECIFICATION, ARCHITECTURE, PLAYBACK_SYSTEM, M4A_READINESS |
 | Individual playback prescribed undefined queue union/LWW behavior. | CAS mismatch returns 409 + current state. Client reloads or explicitly retries replacement; no automatic merge. Essential mutations commit immediately; playing position may be client-throttled. | REQUIREMENTS, DATABASE_SCHEMA, API_SPECIFICATION, PLAYBACK_SYSTEM |
 | Gateway promised Range/206 for all streams. | Range is representation-dependent. Flow forwards upstream behavior and never synthesizes byte-range support for a non-seekable transcode. | REQUIREMENTS, API_SPECIFICATION, PLAYBACK_SYSTEM, ADR-001 |
 | Product role table required metadata editing/deletion while roadmap deferred it. | V1 includes metadata reading, upload, favorites, five themes, member deletion, and admin playlists. Tag editing and both index/file deletion are V1.x. | PRODUCT_SPEC, REQUIREMENTS, API_SPECIFICATION, ROADMAP, README |

@@ -23,6 +23,7 @@ import (
 	"github.com/ifrunruhin12/flow/backend/internal/playback"
 	"github.com/ifrunruhin12/flow/backend/internal/playlist"
 	"github.com/ifrunruhin12/flow/backend/internal/streaming"
+	flowsync "github.com/ifrunruhin12/flow/backend/internal/sync"
 )
 
 const sessionCookie = "flow_session"
@@ -80,11 +81,19 @@ type PlaybackService interface {
 	Clear(context.Context, auth.Principal, *int64) (playback.Session, error)
 }
 
+type SynchronizationService interface {
+	Snapshot(context.Context) (flowsync.Snapshot, error)
+	Start(context.Context, auth.Principal, flowsync.Seed) (flowsync.Result, error)
+	Mutate(context.Context, auth.Principal, flowsync.Mutation) (flowsync.Result, error)
+	End(context.Context, auth.Principal, *int64, flowsync.LeaseCredentials) (flowsync.Result, error)
+}
+
 type Services struct {
-	Library   LibraryService
-	Playlists PlaylistService
-	Streaming StreamingGateway
-	Playback  PlaybackService
+	Library         LibraryService
+	Playlists       PlaylistService
+	Streaming       StreamingGateway
+	Playback        PlaybackService
+	Synchronization SynchronizationService
 }
 
 type Server struct {
@@ -95,6 +104,7 @@ type Server struct {
 	playlists       PlaylistService
 	streaming       StreamingGateway
 	playback        PlaybackService
+	synchronization SynchronizationService
 	publicOrigin    string
 	cookieSecure    bool
 	sessionTTL      time.Duration
@@ -128,6 +138,7 @@ func New(logger *slog.Logger, authService AuthService, membershipService Members
 		server.playlists = optional[0].Playlists
 		server.streaming = optional[0].Streaming
 		server.playback = optional[0].Playback
+		server.synchronization = optional[0].Synchronization
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/auth/login", server.login)
@@ -174,6 +185,14 @@ func New(logger *slog.Logger, authService AuthService, membershipService Members
 		mux.Handle("GET /api/playback/session", server.authenticated(http.HandlerFunc(server.getPlayback)))
 		mux.Handle("PUT /api/playback/session", server.originChecked(server.authenticated(http.HandlerFunc(server.updatePlayback))))
 		mux.Handle("DELETE /api/playback/session", server.originChecked(server.authenticated(http.HandlerFunc(server.clearPlayback))))
+	}
+	if server.synchronization != nil {
+		mux.Handle("GET /api/platform/mode", server.authenticated(http.HandlerFunc(server.getPlatformMode)))
+		mux.Handle("POST /api/platform/mode", server.originChecked(server.admin(http.HandlerFunc(server.setPlatformMode))))
+		mux.Handle("GET /api/sync/state", server.authenticated(http.HandlerFunc(server.getSynchronizedState)))
+		for _, action := range []string{"play", "pause", "seek", "next", "prev", "queue"} {
+			mux.Handle("POST /api/sync/session/"+action, server.originChecked(server.admin(http.HandlerFunc(server.mutateSynchronized))))
+		}
 	}
 	server.handler = server.correlated(mux)
 	return server
@@ -238,7 +257,20 @@ func (s *Server) registerRequest(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
 	principal := principalFrom(r.Context())
-	writeJSON(w, http.StatusOK, map[string]any{"user": principal.User})
+	response := map[string]any{"user": principal.User}
+	if s.synchronization != nil {
+		snapshot, err := s.synchronization.Snapshot(r.Context())
+		if err != nil {
+			s.logger.ErrorContext(r.Context(), "read platform mode", "error", err, "correlation_id", correlationID(r.Context()))
+			writeError(w, http.StatusInternalServerError, "internal_error", "The platform mode could not be read.")
+			return
+		}
+		response["mode"] = snapshot.Mode
+		if snapshot.ActiveSharedSessionID != nil {
+			response["activeSharedSessionId"] = *snapshot.ActiveSharedSessionID
+		}
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 func (s *Server) logout(w http.ResponseWriter, r *http.Request) {

@@ -162,5 +162,12 @@ Key rotation procedure:
 8. **Bootstrap**: start the backend against a Navidrome whose first admin is *not* yet created ⇒ `degraded` state, no data mutated; after the operator creates the admin and configures the secret ⇒ M0 `/healthz` reports integration verified. The admin UI is an M1 deliverable (ADR-003).
 9. **Zombie DJ**: after a reconnect/takeover rotates the connection-bound lease, the old socket repeats a command with its old token and generation ⇒ **409 stale-lease**, no state change (ADR-005).
 10. **Provisioning invariant**: a user with `provisioning_state ≠ complete` is denied login and every gateway request (`account_not_active`), regardless of `status` (ADR-004).
+11. **M4A authority boundary**: anonymous sync reads are 401; member mode/control writes are 403; foreign-Origin mode/control writes are 403; no public lease-acquisition route exists; stale connection/generation/token combinations are 409 and leave checkpoint/event sequence unchanged.
+
+M4A rechecks the persisted user role/status/provisioning state and opaque
+session row inside the same transaction that locks the platform/shared-session
+rows. Suspension or revocation that wins before this recheck prevents the
+command. Lease tokens are returned only by the trusted future M4B connection
+boundary; PostgreSQL stores only their SHA-256 hashes.
 
 M2 fast-suite coverage executed locally: member/admin library authorization, member playlist-mutation denial, safe-header allowlisting, unsupported download-query rejection, original/transcoded Range truthfulness, client cancellation, active-stream suspension, registration/suspension races, concurrent credential refresh, refresh eviction fencing, malformed upstream responses, and bounded-copy behavior with a 32 MiB fixture. The extended real pinned-Navidrome suite compiled but was not executed in this environment because Docker/Navidrome were unavailable; acceptance items depending on it remain pending that job.

@@ -32,6 +32,7 @@ flow/
 │   ├── internal/playlist/     ← member reads and admin-curated playlist logic
 │   ├── internal/playback/     ← per-account PostgreSQL state and revision CAS
 │   ├── internal/streaming/    ← secure audio/artwork gateway and lifecycle registry
+│   ├── internal/sync/         ← M4A state machine, executor, leases, timing, durable events
 │   ├── integration/           ← opt-in real Navidrome contract suite
 │   └── migrations/            ← embedded milestone-owned SQL
 ├── web/                       ← React/TypeScript library and persistent M3 global player
@@ -44,7 +45,7 @@ flow/
 └── CHANGELOG.md
 ```
 
-Production Compose/Caddy and later domain packages are introduced by their roadmap milestones. M3 adds individual playback persistence and a global queue/player. It introduces no synchronized-playback, upload, or theme placeholders.
+Production Compose/Caddy and later domain packages are introduced by their roadmap milestones. M3 adds individual playback persistence and a global queue/player. M4A adds only the synchronized backend authority; WebSocket delivery and synchronized browser playback remain M4B.
 
 ## Current Status
 
@@ -55,9 +56,19 @@ durable controls/10-second checkpoints, global audio/queue UI, restore, and expl
 multi-device conflict reconciliation. Deterministic tests pass; live PostgreSQL
 and browser/Navidrome/restart gates remain pending in the socket-restricted local
 environment. [M3_REPORT.md](docs/M3_REPORT.md) records the evidence and limitations.
-CI includes a real M3 gate. M4A has not started.
+CI includes a real M3 gate.
 
-## Run M3 Locally
+M4A is implemented on the backend: the platform mode and shared checkpoint live
+in PostgreSQL, all transitions run through one executor, DJ commands are fenced
+by a rotated connection-bound lease, lifecycle events use a separate event
+sequence, disconnects freeze into a persisted 90-second grace period, and
+startup/graceful-shutdown recovery safely returns the platform to Individual
+mode. No WebSocket server or synchronized frontend was added. Deterministic Go
+tests pass; the new PostgreSQL locking/rollback suite requires
+`FLOW_TEST_DATABASE_URL` and was skipped in the latest environment. See
+[M4A_REPORT.md](docs/M4A_REPORT.md).
+
+## Run M3/M4A Locally
 
 Prerequisites: Go 1.27.3, Node 20.18.2, Docker with Compose, and FFmpeg only if generating the deterministic audio fixture.
 
@@ -114,6 +125,14 @@ npm run build
 ```
 
 See [DEVELOPMENT_GUIDE.md](docs/DEVELOPMENT_GUIDE.md) for the PostgreSQL migration test and the explicitly destructive, disposable-only real Navidrome contract suite.
+
+Run the M4A PostgreSQL concurrency suite against the disposable development
+database (never a production schema):
+
+```bash
+cd backend
+FLOW_TEST_DATABASE_URL="$FLOW_DATABASE_URL" go test -run TestSynchronizationPostgresTransactionsAndRecovery ./internal/sync
+```
 
 ## Key Architecture Decisions
 
@@ -176,6 +195,7 @@ See `docs/ROADMAP.md` for the full milestone breakdown.
 | `docs/ROADMAP.md` | V1.0.0 → V1.x → V2.0.0 milestones and task breakdown |
 | `docs/decisions/ADR-001…007.md` | Architecture Decision Records including M3 persistence/browser transport |
 | `docs/M3_READINESS.md` / `docs/M3_REPORT.md` | M0–M2 audit and M3 implementation/verification report |
+| `docs/M4A_READINESS.md` / `docs/M4A_REPORT.md` | M0–M3 audit and synchronized-backend implementation/verification report |
 | `docs/ARCHITECTURE_STATUS.md` | Reconciliation decisions, contradictions resolved, and evidence status |
 | `docs/CONTRACT_MATRIX.md` | Normative contract ownership and cross-document references |
 | `CHANGELOG.md` | Repository changes and remaining verification work |

@@ -1,0 +1,22 @@
+# M4A readiness audit — 2026-11-07
+
+The repository documentation, ADR-001…007, migrations, process composition,
+authentication, membership, library, gateway, individual playback, tests and CI
+were inspected before synchronized-state implementation.
+
+| Area | Verified behavior and evidence | Gap or M4A action |
+|---|---|---|
+| Authentication | `internal/auth` resolves opaque cookie tokens through PostgreSQL on every request, checks active/complete account state, and revokes by deleting session rows. API middleware derives the actor from that principal; admin routes check the persisted role. Auth/API tests and the race suite pass. | M4A writes must repeat the account/session check inside their commit transaction, as M3 does. WebSocket Origin/session validation remains M4B. |
+| Membership | `internal/membership` persists the provisioning machine and only complete active users authenticate. Suspension deletes sessions and calls the M2 lifecycle hook. Membership unit/integration tests cover provisioning and suspension; PostgreSQL cases run when `FLOW_TEST_DATABASE_URL` is present. | No membership refactor is required. Sync commands must reject an account that becomes inactive before commit. |
+| Navidrome and library | `internal/library` maps Flow media IDs to member-scoped Navidrome `getSong`; credentials remain in server-side adapters/caches. The gateway is the only audio path and rechecks authorization after registering cancellation. M2 tests cover media validation, credential suppression, cancellation and suspension races. | Every new shared active destination must be validated before commit. M4A adds no audio path. The extended pinned-Navidrome M2 contract still requires its independent live gate. |
+| Individual playback | `internal/playback` owns one row per account and conditional revision CAS. Queue/state survive backend dependency recreation; API ownership and concurrent stale rejection have deterministic and optional PostgreSQL tests. The full Go race suite and 33 frontend tests pass. | Individual mutations currently ignore platform mode. M4A must reject them while synchronized without changing `session_state`, and restore access when mode returns to individual. |
+| M3 live gate | GitHub's PostgreSQL/M3 job reached `TestM3LivePlayback`; the visible failure is `ENOTEMPTY` while deleting Chromium's temporary profile, not a reported playback assertion. | `web/tests/cdp.mjs` now uses bounded recursive-removal retries. Because a `finally` cleanup exception can mask an earlier exception, the workflow must be rerun before claiming the complete M3 browser gate. This does not block the backend-only M4A design. |
+| Persistence foundation | Embedded transactional migrations, advisory locking and PostgreSQL integration-test schemas exist. M3 demonstrates authenticated commit-time rechecks and conditional writes. | Add a reversible M4A migration for the mode singleton, shared checkpoints and durable events. PostgreSQL transactions/row locks and constraints remain authoritative even though one in-process executor serializes commands. |
+| API contract | API §5/§6 currently names both `POST /sync/session`/`end` and `POST /platform/mode` for the same mode transitions. Lease acquisition is described as originating from an authenticated server-issued WebSocket connection, which M4A intentionally does not implement. | Use `POST /platform/mode` as the sole public start/end transition. Keep lease acquire/disconnect as trusted service operations for the M4B hub; do not expose a client-supplied connection-ID lease route in M4A. Shared control routes remain under `/sync/session/*`. Reconcile the documentation accordingly. |
+| Accepted sync decisions | ADR-005 defines a single process executor, connection-bound rotated lease, persisted 90-second deadline and safe-end restart. ADR-006 defines content `version`, total `event_seq`, exactly one durable event per sequence and checkpoint/event atomicity. | These decisions are sufficient for implementation. No new ADR is required. |
+
+Readiness conclusion: M0–M3 provide the authenticated principal, member-scoped
+media validation, sole audio gateway, migration runner and durable individual
+state M4A needs. The remaining M3 browser rerun is a release-evidence issue, not
+a dependency of the backend state machine. M4A may proceed after applying the
+mode gate and canonical API reconciliation above. No M4B feature is required.

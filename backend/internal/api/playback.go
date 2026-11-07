@@ -68,6 +68,8 @@ func (s *Server) handlePlaybackError(w http.ResponseWriter, r *http.Request, err
 		writeError(w, http.StatusBadRequest, "invalid_request", "The supplied playback values are invalid.")
 	case errors.Is(err, playback.ErrPasswordChangeRequired):
 		writeError(w, http.StatusForbidden, "password_change_required", "Change the temporary password before continuing.")
+	case errors.Is(err, playback.ErrSynchronizedMode):
+		writeError(w, http.StatusConflict, "synchronized_mode", "Individual playback controls are unavailable during synchronized mode.")
 	default:
 		s.handleM2Error(w, r, err)
 	}

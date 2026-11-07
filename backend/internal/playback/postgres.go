@@ -35,11 +35,31 @@ func (s *PostgresStore) Load(ctx context.Context, principal auth.Principal) (Ses
 }
 
 func (s *PostgresStore) CompareAndSwap(ctx context.Context, principal auth.Principal, revision int64, next Session) (Session, error) {
+	return s.compareAndSwap(ctx, principal, revision, next, "")
+}
+
+func (s *PostgresStore) CompareAndSwapInMode(ctx context.Context, principal auth.Principal, revision int64, next Session, requiredMode string) (Session, error) {
+	if requiredMode != "individual" {
+		return Session{}, ErrInvalidInput
+	}
+	return s.compareAndSwap(ctx, principal, revision, next, requiredMode)
+}
+
+func (s *PostgresStore) compareAndSwap(ctx context.Context, principal auth.Principal, revision int64, next Session, requiredMode string) (Session, error) {
 	tx, err := s.authorizedTransaction(ctx, principal)
 	if err != nil {
 		return Session{}, err
 	}
 	defer tx.Rollback(ctx)
+	if requiredMode != "" {
+		var mode string
+		if err := tx.QueryRow(ctx, `SELECT mode FROM settings WHERE id=1 FOR SHARE`).Scan(&mode); err != nil {
+			return Session{}, fmt.Errorf("lock playback mode: %w", err)
+		}
+		if mode != requiredMode {
+			return Session{}, ErrSynchronizedMode
+		}
+	}
 	queue, err := json.Marshal(next.Queue)
 	if err != nil {
 		return Session{}, fmt.Errorf("encode playback queue: %w", err)

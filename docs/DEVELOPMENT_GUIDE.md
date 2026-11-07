@@ -71,7 +71,7 @@ The compose file and real-integration workflow use `deluan/navidrome:0.64.2@sha2
 Two disjoint sets, never overlapping:
 
 - **Deployment config = env vars + mounted secrets**: DSN, Navidrome URL/admin credential, Flow bootstrap admin credential, public browser origin, session/provisioning timeouts, listen/shutdown/HTTP timeouts (including `FLOW_NAVIDROME_STREAM_HEADER_TIMEOUT`), music root, log level, and `FLOW_CREDENTIAL_KEYRING_FILE`. PostgreSQL never stores the master keyring.
-- **Runtime settings = Postgres `settings`** (admin-editable, live): platform mode, default theme, sync tuning (drift threshold, heartbeat interval, DJ grace), feature flags. Admin UI writes these; there is **no env override** in V1.
+- **Runtime settings = Postgres `settings`**: M4A creates platform mode, drift threshold, heartbeat interval, and the fixed 90-second DJ grace. M5 adds the documented settings CRUD/theme/feature columns. There is **no env override** for either stage.
 
 Decision rule when adding a knob: "does an operator change it at deploy time (env) or does an admin change it while the platform runs (DB)?" One home per knob. A knob that appears in both layers is a defect the bootstrap check (ARCHITECTURE §8) should catch.
 
@@ -106,7 +106,7 @@ Decision rule when adding a knob: "does an operator change it at deploy time (en
 
 The single-writer executor is the liveness heart of synchronized mode. Its lifecycle is defined, not ad-hoc:
 
-- **Normal shutdown (SIGTERM):** the process coordinator signals the executor to **flush**: finish the in-flight mutation, write its checkpoint, then (per ADR-005 V1 policy) emit `session-ended {reason: platform-restart}` and persist `state=ended`. The WS hub closes all connections with a close frame. Only then does the process exit. No checkpoint is lost; no broadcast outruns its checkpoint (the "checkpoint-before-broadcast" invariant, ADR-006, holds even at shutdown).
+- **Normal shutdown (SIGTERM):** HTTP draining stops new commands; the process then runs the executor's idempotent recovery transition, emitting and persisting `session-ended {reason: platform-restart}` before closing the executor. M4B will add graceful WebSocket close frames. No checkpoint is lost; no broadcast may outrun its checkpoint.
 - **Crash (kill -9 / OOM):** no graceful path runs. Postgres holds the last committed checkpoint. On next boot the executor scans `shared_sessions` for non-ended rows and **ends them safely** (ADR-005 §3.6) — it does not attempt to resume.
 - **Executor panic:** the executor's recover is a deliberate crash (a writer that half-applied a mutation is worse than dead). The process exits non-zero; compose restarts it; boot-time safe-end applies. A recovered-but-stale executor is a corrupt-state risk, so it is not recovered.
 - **Navidrome down while the executor runs:** sync *state* is unaffected (it's Flow's own data). The gateway's upstream calls fail (`navidrome_unavailable`); members see "stream unavailable" per-client; the coordinator keeps running and keeps correcting drift against reported positions.
@@ -120,8 +120,10 @@ The single-writer executor is the liveness heart of synchronized mode. Its lifec
 | **Integration — fake Navidrome** (fast, always on PR) | the narrow adapter's request paths, authentication headers, JSON decoding, cancellation, redacted transport errors, and HTTP error mapping | deterministic injected `http.RoundTripper`; PostgreSQL integration uses a disposable real server supplied by CI or `FLOW_TEST_DATABASE_URL` | **fake** |
 | **Integration — real Navidrome** (manual/nightly/tag) | executable contract suite against release `0.64.2`: bootstrap/login, users/libraries, browse/search, member scope, playlists, stream Range/transcode/seek, scan, and config gates | pinned image when Docker is available; the suite requires an explicit disposable-instance mutation flag. A local binary built from the exact tag is a development fallback but does not establish the image digest | **real, pinned release** |
 | **M3 live E2E** (PR/main/manual) | actual Flow executable, PostgreSQL 16, pinned Navidrome, compiled SPA, Chromium decoding/progress, two tabs/accounts and a process restart | `playback-live.yml`, test-only DevTools pipe client | real |
+| **M4A PostgreSQL** | separate executors racing mode/lease/content writes, unique event order, event-insert rollback, commit-time suspension recheck, restart safe-end, individual-state preservation, migration down/up | `FLOW_TEST_DATABASE_URL=… go test -run TestSynchronizationPostgresTransactionsAndRecovery ./internal/sync` | fake library |
 
-M4 drift/state-machine/WebSocket/Playwright checks remain future milestone work.
+M4A state-machine/API tests are fast and deterministic. M4B WebSocket,
+multi-browser playback, and live drift checks remain future milestone work.
 M3's test-only browser driver adds no production dependency. Neither mocked audio
 nor a skipped live suite is evidence that browser playback works.
 

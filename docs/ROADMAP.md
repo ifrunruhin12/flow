@@ -90,6 +90,14 @@ marked complete while those gates are outstanding. No M4 implementation started.
 
 Exit: **the sync engine is correct and persisted: mutations are serialized, checkpointed authoritatively, DJ lifecycle is lease-gated, and a restart ends sessions safely — all proven by fake-Navidrome integration tests, before any WebSocket code exists.**
 
+Implementation status (2026-11-07): backend implementation and deterministic
+tests are complete. The real-pgx suite covers concurrent starts/commands/lease
+acquisition, event ordering, transactional rollback, account suspension races,
+restart recovery, individual-state preservation, and migration reapplication;
+it is present but was skipped locally because `FLOW_TEST_DATABASE_URL` was not
+available. M4A therefore has implementation-complete status with its PostgreSQL
+execution gate still awaiting an environment-backed run. M4B has not started.
+
 ## M4B — WebSockets, Multi-Client Playback, Drift Correction, DJ Lifecycle, Sync UI
 
 | Task | IDs / refs |
